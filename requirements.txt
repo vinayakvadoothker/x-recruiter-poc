@@ -1,0 +1,39 @@
+# Grok Recruiter - Python Dependencies
+
+# FastAPI and server
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+pydantic>=2.0.0
+
+# HTTP client
+httpx>=0.24.0
+
+# Environment variables
+python-dotenv>=1.0.0
+
+# Data visualization
+plotly>=5.15.0
+matplotlib>=3.7.0
+
+# Dashboard
+streamlit>=1.28.0
+
+# Scientific computing (for bandit mocks)
+numpy>=1.24.0
+
+# Logging and utilities
+python-json-logger>=2.0.0
+
+# Optional: Neo4j (when Vin's code is ready)
+# neo4j>=5.0.0
+
+# Optional: NetworkX (when Vin's code is ready)
+# networkx>=3.0
+
+# Optional: SciPy (when Vin's code is ready)
+# scipy>=1.10.0
+
+# Testing (optional)
+pytest>=7.0.0
+pytest-asyncio>=0.21.0
+
