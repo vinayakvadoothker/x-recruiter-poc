@@ -17,6 +17,8 @@ import logging
 from typing import Dict, List, Any, Optional
 from backend.database.vector_db_client import VectorDBClient
 from backend.embeddings import RecruitingKnowledgeGraphEmbedder
+from backend.database.postgres_client import PostgresClient
+from backend.orchestration.company_context import get_company_context
 
 logger = logging.getLogger(__name__)
 
@@ -32,18 +34,22 @@ class KnowledgeGraphCRUD:
     def __init__(self,
                  vector_db: VectorDBClient,
                  embedder: RecruitingKnowledgeGraphEmbedder,
-                 metadata_store: Dict[str, Dict[str, Any]]):
+                 metadata_store: Dict[str, Dict[str, Any]],
+                 postgres_client: Optional[PostgresClient] = None):
         """
         Initialize CRUD operations.
         
         Args:
             vector_db: Vector DB client
             embedder: Embedder instance
-            metadata_store: Shared metadata store dictionary
+            metadata_store: Shared metadata store dictionary (for candidates only)
+            postgres_client: PostgreSQL client (for teams/interviewers/positions - source of truth)
         """
         self.vector_db = vector_db
         self.embedder = embedder
         self.metadata_store = metadata_store
+        self.postgres_client = postgres_client
+        self.company_context = get_company_context()
     
     # ========== Candidate CRUD ==========
     
@@ -78,61 +84,123 @@ class KnowledgeGraphCRUD:
     # ========== Team CRUD ==========
     
     def add_team(self, team_data: Dict[str, Any]) -> str:
-        """Add team with automatic embedding."""
+        """Add team with automatic embedding (stores in Weaviate only, PostgreSQL is source of truth)."""
         team_id = team_data['id']
         embedding = self.embedder.embed_team(team_data)
         self.vector_db.store_team(team_id, embedding, team_data)
-        self.metadata_store[f"team:{team_id}"] = team_data
-        logger.debug(f"Added team: {team_id}")
+        # Don't store in metadata_store - PostgreSQL is source of truth
+        logger.debug(f"Added team to Weaviate: {team_id}")
         return team_id
     
     def get_team(self, team_id: str) -> Optional[Dict[str, Any]]:
-        """Get team by ID."""
-        return self.metadata_store.get(f"team:{team_id}")
+        """Get team by ID from PostgreSQL (source of truth)."""
+        if not self.postgres_client:
+            logger.warning("PostgreSQL client not available, cannot fetch team")
+            return None
+        
+        company_id = self.company_context.get_company_id()
+        team = self.postgres_client.execute_one(
+            "SELECT * FROM teams WHERE id = %s AND company_id = %s",
+            (team_id, company_id)
+        )
+        
+        if team:
+            # Convert to dict format
+            return dict(team)
+        return None
     
     def get_all_teams(self) -> List[Dict[str, Any]]:
-        """Get all teams."""
-        return [v for k, v in self.metadata_store.items() if k.startswith("team:")]
+        """Get all teams from PostgreSQL (source of truth)."""
+        if not self.postgres_client:
+            logger.warning("PostgreSQL client not available, cannot fetch teams")
+            return []
+        
+        company_id = self.company_context.get_company_id()
+        teams = self.postgres_client.execute_query(
+            "SELECT * FROM teams WHERE company_id = %s ORDER BY created_at DESC",
+            (company_id,)
+        )
+        
+        return [dict(team) for team in teams]
     
     def update_team(self, team_id: str, updates: Dict[str, Any]) -> bool:
-        """Update team and re-embed."""
+        """Update team and re-embed (PostgreSQL is source of truth, update Weaviate embeddings)."""
+        # Get current team from PostgreSQL
         team = self.get_team(team_id)
         if not team:
             return False
+        
+        # Merge updates
         team.update(updates)
+        
+        # Re-embed and update Weaviate
         embedding = self.embedder.embed_team(team)
         self.vector_db.store_team(team_id, embedding, team)
-        self.metadata_store[f"team:{team_id}"] = team
+        
+        # Note: PostgreSQL update should be done by API routes, not here
+        # This method only updates Weaviate embeddings
+        logger.debug(f"Updated team embeddings in Weaviate: {team_id}")
         return True
     
     # ========== Interviewer CRUD ==========
     
     def add_interviewer(self, interviewer_data: Dict[str, Any]) -> str:
-        """Add interviewer with automatic embedding."""
+        """Add interviewer with automatic embedding (stores in Weaviate only, PostgreSQL is source of truth)."""
         interviewer_id = interviewer_data['id']
         embedding = self.embedder.embed_interviewer(interviewer_data)
         self.vector_db.store_interviewer(interviewer_id, embedding, interviewer_data)
-        self.metadata_store[f"interviewer:{interviewer_id}"] = interviewer_data
-        logger.debug(f"Added interviewer: {interviewer_id}")
+        # Don't store in metadata_store - PostgreSQL is source of truth
+        logger.debug(f"Added interviewer to Weaviate: {interviewer_id}")
         return interviewer_id
     
     def get_interviewer(self, interviewer_id: str) -> Optional[Dict[str, Any]]:
-        """Get interviewer by ID."""
-        return self.metadata_store.get(f"interviewer:{interviewer_id}")
+        """Get interviewer by ID from PostgreSQL (source of truth)."""
+        if not self.postgres_client:
+            logger.warning("PostgreSQL client not available, cannot fetch interviewer")
+            return None
+        
+        company_id = self.company_context.get_company_id()
+        interviewer = self.postgres_client.execute_one(
+            "SELECT * FROM interviewers WHERE id = %s AND company_id = %s",
+            (interviewer_id, company_id)
+        )
+        
+        if interviewer:
+            # Convert to dict format
+            return dict(interviewer)
+        return None
     
     def get_all_interviewers(self) -> List[Dict[str, Any]]:
-        """Get all interviewers."""
-        return [v for k, v in self.metadata_store.items() if k.startswith("interviewer:")]
+        """Get all interviewers from PostgreSQL (source of truth)."""
+        if not self.postgres_client:
+            logger.warning("PostgreSQL client not available, cannot fetch interviewers")
+            return []
+        
+        company_id = self.company_context.get_company_id()
+        interviewers = self.postgres_client.execute_query(
+            "SELECT * FROM interviewers WHERE company_id = %s ORDER BY created_at DESC",
+            (company_id,)
+        )
+        
+        return [dict(interviewer) for interviewer in interviewers]
     
     def update_interviewer(self, interviewer_id: str, updates: Dict[str, Any]) -> bool:
-        """Update interviewer and re-embed."""
+        """Update interviewer and re-embed (PostgreSQL is source of truth, update Weaviate embeddings)."""
+        # Get current interviewer from PostgreSQL
         interviewer = self.get_interviewer(interviewer_id)
         if not interviewer:
             return False
+        
+        # Merge updates
         interviewer.update(updates)
+        
+        # Re-embed and update Weaviate
         embedding = self.embedder.embed_interviewer(interviewer)
         self.vector_db.store_interviewer(interviewer_id, embedding, interviewer)
-        self.metadata_store[f"interviewer:{interviewer_id}"] = interviewer
+        
+        # Note: PostgreSQL update should be done by API routes, not here
+        # This method only updates Weaviate embeddings
+        logger.debug(f"Updated interviewer embeddings in Weaviate: {interviewer_id}")
         return True
     
     # ========== Position CRUD ==========

@@ -26,6 +26,12 @@ POSITION_TITLES = [
 
 EXPERIENCE_LEVELS = ['Junior', 'Mid', 'Senior', 'Staff']
 
+COMPANY_NAMES = [
+    'TechCorp', 'AI Innovations', 'CloudScale', 'DataFlow Systems',
+    'ML Dynamics', 'Platform Labs', 'Infrastructure Co', 'DevOps Solutions',
+    'Research Labs', 'Engineering Hub', 'Systems Inc', 'TechStart'
+]
+
 
 def generate_position_profile(position_id: int, team_id: Optional[int] = None) -> Dict[str, Any]:
     """
@@ -90,9 +96,13 @@ def generate_position_profile(position_id: int, team_id: Optional[int] = None) -
         "Drive technical excellence and best practices"
     ]
     
+    # Generate company name
+    company = random.choice(COMPANY_NAMES)
+    
     return {
         'id': f'position_{position_id:04d}',
         'title': title,
+        'company': company,
         'team_id': f'team_{team_id:04d}' if team_id is not None else f'team_{random.randint(0, 100):04d}',
         'description': f"We're looking for a {experience_level.lower()} {title.lower()} to join our team...",
         'requirements': requirements,

@@ -433,20 +433,77 @@ class PhoneScreenDecisionEngine:
             flags.append("poor_communication")
         score += communication * 0.2
         
-        # Check technical depth
+        # Check technical depth (comprehensive assessment)
         technical = extracted_info.get('technical_depth', 0.5)
-        if technical < 0.5:
-            flags.append("insufficient_technical_depth")
-        score += technical * 0.4
+        problem_solving = extracted_info.get('problem_solving_ability', 0.5)
+        implementation = extracted_info.get('implementation_experience', 0.5)
+        technical_comm = extracted_info.get('technical_communication', 0.5)
         
-        # Check cultural fit
+        # Combined technical score (weighted average)
+        combined_technical = (
+            technical * 0.35 +
+            problem_solving * 0.25 +
+            implementation * 0.25 +
+            technical_comm * 0.15
+        )
+        
+        if combined_technical < 0.5:
+            flags.append("insufficient_technical_depth")
+        if problem_solving < 0.4:
+            flags.append("weak_problem_solving")
+        if implementation < 0.4:
+            flags.append("lack_of_hands_on_experience")
+        
+        score += combined_technical * 0.4
+        
+        # Check for red flags
+        red_flags = extracted_info.get('red_flags', [])
+        if red_flags:
+            flags.extend([f"red_flag: {flag}" for flag in red_flags[:3]])  # Top 3 red flags
+            score -= len(red_flags) * 0.05  # Penalty for red flags
+        
+        # Check knowledge gaps
+        knowledge_gaps = extracted_info.get('knowledge_gaps', [])
+        if len(knowledge_gaps) > 2:
+            flags.append("significant_knowledge_gaps")
+            score -= 0.1
+        
+        # Check cultural fit and learning ability
         cultural_fit = extracted_info.get('cultural_fit', 0.5)
-        score += cultural_fit * 0.1
+        learning_ability = extracted_info.get('learning_ability', 0.5)
+        pressure_handling = extracted_info.get('pressure_handling', 0.5)
+        
+        score += cultural_fit * 0.05
+        score += learning_ability * 0.03
+        score += pressure_handling * 0.02
+        
+        # Check recommendation strength (from deep analysis)
+        recommendation = extracted_info.get('recommendation_strength', 'maybe')
+        if recommendation == 'strong_yes':
+            score += 0.15
+        elif recommendation == 'yes':
+            score += 0.10
+        elif recommendation == 'maybe':
+            score += 0.0
+        elif recommendation == 'no':
+            score -= 0.10
+        elif recommendation == 'strong_no':
+            score -= 0.20
+        
+        # Include deep analysis insights in validation
+        overall_assessment = extracted_info.get('overall_assessment', '')
+        recommendation = extracted_info.get('recommendation_strength', 'maybe')
+        
+        # If recommendation is strong_no or no, add flag
+        if recommendation in ['no', 'strong_no']:
+            flags.append(f"deep_analysis_recommendation: {recommendation}")
         
         return {
             "score": min(1.0, score),
             "flags": flags,
-            "validated": len(flags) == 0
+            "validated": len(flags) == 0,
+            "overall_assessment": overall_assessment,
+            "recommendation": recommendation
         }
     
     def _compute_bandit_confidence(
@@ -479,6 +536,69 @@ class PhoneScreenDecisionEngine:
         
         return float(confidence)
     
+    def _check_arxiv_research(self, candidate: Dict[str, Any]) -> float:
+        """
+        Check if candidate has arXiv research and return boost factor.
+        
+        arXiv research is heavily weighted because it indicates:
+        - Strong technical depth
+        - Research experience
+        - Published contributions
+        - Academic rigor
+        
+        Args:
+            candidate: Candidate profile
+        
+        Returns:
+            Boost factor (0.0-1.0), where 1.0 = significant arXiv research
+        """
+        papers = candidate.get('papers', [])
+        arxiv_author_id = candidate.get('arxiv_author_id')
+        orcid_id = candidate.get('orcid_id')
+        research_contributions = candidate.get('research_contributions', [])
+        
+        # Check if candidate has arXiv research
+        has_arxiv = bool(
+            papers or 
+            arxiv_author_id or 
+            orcid_id or
+            research_contributions
+        )
+        
+        if not has_arxiv:
+            return 0.0
+        
+        # Calculate boost based on research depth
+        boost = 0.0
+        
+        # Base boost for having any arXiv research
+        if papers or arxiv_author_id or orcid_id:
+            boost += 0.3
+        
+        # Additional boost for number of papers
+        if papers:
+            paper_count = len(papers)
+            if paper_count >= 20:
+                boost += 0.4  # Very experienced researcher
+            elif paper_count >= 10:
+                boost += 0.3  # Experienced researcher
+            elif paper_count >= 5:
+                boost += 0.2  # Active researcher
+            else:
+                boost += 0.1  # Some research
+        
+        # Boost for research contributions (actual work, not just papers)
+        if research_contributions:
+            boost += 0.2
+        
+        # Boost for having research areas/domains from arXiv
+        research_areas = candidate.get('research_areas', [])
+        if research_areas:
+            boost += 0.1
+        
+        # Cap at 1.0
+        return min(boost, 1.0)
+    
     def _evaluate_candidate(
         self,
         candidate: Dict[str, Any],
@@ -493,10 +613,14 @@ class PhoneScreenDecisionEngine:
         Final multi-factor evaluation (EXTREMELY SCRUTINIZING).
         
         Combines:
-        - Embedding similarity (40% weight)
-        - Bandit confidence (30% weight)
+        - Embedding similarity (30% weight)
+        - Bandit confidence (25% weight)
         - Extracted info quality (20% weight)
+        - arXiv research (25% weight) - HEAVILY WEIGHTED
         - Outlier penalty (10% penalty)
+        
+        Note: arXiv research is heavily weighted because published research indicates
+        strong technical depth, research experience, and proven contributions.
         
         Args:
             candidate: Candidate profile
@@ -510,16 +634,22 @@ class PhoneScreenDecisionEngine:
         Returns:
             Final decision dictionary
         """
-        # Compute weighted score
-        similarity_weight = 0.40
-        bandit_weight = 0.30
+        # Check for arXiv research (HEAVILY WEIGHTED)
+        arxiv_boost = self._check_arxiv_research(candidate)
+        
+        # Compute weighted score - arXiv research gets 25% weight
+        # Adjusted weights: similarity 30%, bandit 25%, extracted 20%, arxiv 25%
+        similarity_weight = 0.30
+        bandit_weight = 0.25
         extracted_weight = 0.20
+        arxiv_weight = 0.25  # HEAVY WEIGHT for arXiv research
         outlier_penalty = 0.10
         
         base_score = (
             similarity * similarity_weight +
             bandit_confidence * bandit_weight +
-            extracted_validation['score'] * extracted_weight
+            extracted_validation['score'] * extracted_weight +
+            arxiv_boost * arxiv_weight  # arXiv research boost
         )
         
         # Apply outlier penalty
@@ -529,22 +659,64 @@ class PhoneScreenDecisionEngine:
         logger.info(f"Evaluation scores: similarity={similarity:.3f}, "
                    f"bandit={bandit_confidence:.3f}, "
                    f"extracted={extracted_validation['score']:.3f}, "
+                   f"arxiv_boost={arxiv_boost:.3f}, "
                    f"outlier_penalty={outlier_penalty_amount:.3f}, "
                    f"final={final_score:.3f}")
         
         # Make decision (STRICT THRESHOLD)
         decision = "pass" if final_score >= self.confidence_threshold else "fail"
         
-        # Generate detailed reasoning
+        # Generate detailed reasoning with deep analysis insights
         reasoning_parts = []
+        
+        # Technical assessment
+        technical_depth = extracted_info.get('technical_depth', 0.5)
+        problem_solving = extracted_info.get('problem_solving_ability', 0.5)
+        if technical_depth >= 0.7:
+            reasoning_parts.append(f"Strong technical depth ({technical_depth:.2f})")
+        if problem_solving >= 0.7:
+            reasoning_parts.append(f"Excellent problem-solving ability ({problem_solving:.2f})")
+        
+        # Overall assessment from deep analysis
+        overall_assessment = extracted_info.get('overall_assessment', '')
+        if overall_assessment and overall_assessment != "Analysis pending":
+            reasoning_parts.append(f"Analysis: {overall_assessment[:200]}")
+        
+        # Standout qualities
+        standout_qualities = extracted_info.get('standout_qualities', [])
+        if standout_qualities:
+            reasoning_parts.append(f"Standout qualities: {', '.join(standout_qualities[:3])}")
+        
+        # Concerns
+        concerns = extracted_info.get('concerns', [])
+        red_flags = extracted_info.get('red_flags', [])
+        if concerns or red_flags:
+            all_concerns = concerns + red_flags
+            reasoning_parts.append(f"Concerns: {', '.join(all_concerns[:3])}")
+        
+        # Key insights
+        key_insights = extracted_info.get('key_insights', [])
+        if key_insights:
+            reasoning_parts.append(f"Key insights: {', '.join(key_insights[:2])}")
+        
+        # Traditional factors
         if similarity >= self.similarity_threshold:
             reasoning_parts.append(f"Strong embedding similarity ({similarity:.2f})")
         if bandit_confidence >= 0.7:
             reasoning_parts.append(f"High bandit confidence ({bandit_confidence:.2f})")
+        if arxiv_boost >= 0.5:
+            reasoning_parts.append(f"Strong arXiv research background (boost: {arxiv_boost:.2f})")
         if extracted_validation['validated']:
             reasoning_parts.append("Extracted information validated")
         if outlier_flags:
             reasoning_parts.append(f"Outliers detected: {len(outlier_flags)}")
+        
+        # Recommendation strength
+        recommendation = extracted_info.get('recommendation_strength', 'maybe')
+        if recommendation in ['strong_yes', 'yes']:
+            reasoning_parts.append(f"Recommendation: {recommendation.upper()}")
+        elif recommendation in ['no', 'strong_no']:
+            reasoning_parts.append(f"Recommendation: {recommendation.upper()} (concerning)")
         
         if decision == "pass":
             reasoning = f"PASS: {'; '.join(reasoning_parts)}. Final score: {final_score:.2f}"
@@ -552,11 +724,29 @@ class PhoneScreenDecisionEngine:
             reasoning = f"FAIL: Final score {final_score:.2f} below threshold {self.confidence_threshold:.2f}. " \
                        f"Issues: {'; '.join(reasoning_parts) if reasoning_parts else 'Low overall score'}"
         
+        # Include deep analysis in decision result
+        overall_assessment = extracted_info.get('overall_assessment', '')
+        key_insights = extracted_info.get('key_insights', [])
+        standout_qualities = extracted_info.get('standout_qualities', [])
+        concerns = extracted_info.get('concerns', [])
+        strong_examples = extracted_info.get('strong_technical_examples', [])
+        weak_examples = extracted_info.get('weak_technical_examples', [])
+        
         return {
             "decision": decision,
             "confidence": final_score,
             "reasoning": reasoning,
             "similarity_score": similarity,
+            "arxiv_boost": arxiv_boost,
+            "deep_analysis": {
+                "overall_assessment": overall_assessment,
+                "key_insights": key_insights,
+                "standout_qualities": standout_qualities,
+                "concerns": concerns,
+                "strong_technical_examples": strong_examples,
+                "weak_technical_examples": weak_examples,
+                "recommendation_strength": extracted_info.get('recommendation_strength', 'maybe')
+            },
             "bandit_confidence": bandit_confidence,
             "extracted_info_score": extracted_validation['score'],
             "must_have_match": True,

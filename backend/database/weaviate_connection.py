@@ -54,20 +54,41 @@ def create_weaviate_client(url: Optional[str] = None):
         
         # Weaviate v4 API - use connect_to_local for localhost, connect_to_custom for Docker service names
         if host == "localhost" or host == "127.0.0.1":
-            client = weaviate.connect_to_local(
-                host=host,
-                port=port
-            )
+            # Try to connect with gRPC first, but skip checks if not available
+            try:
+                client = weaviate.connect_to_local(
+                    host=host,
+                    port=port,
+                    grpc_port=50051,
+                    skip_init_checks=True  # Skip gRPC checks if gRPC is not available
+                )
+            except Exception as e:
+                logger.warning(f"Failed to connect with gRPC, trying HTTP only: {e}")
+                # Fall back to HTTP only if gRPC fails
+                client = weaviate.connect_to_local(
+                    host=host,
+                    port=port,
+                    skip_init_checks=True
+                )
         else:
             # For Docker service names (e.g., "weaviate")
-            client = weaviate.connect_to_custom(
-                http_host=host,
-                http_port=port,
-                http_secure=False,
-                grpc_host=host,
-                grpc_port=50051,
-                grpc_secure=False
-            )
+            try:
+                client = weaviate.connect_to_custom(
+                    http_host=host,
+                    http_port=port,
+                    http_secure=False,
+                    grpc_host=host,
+                    grpc_port=50051,
+                    grpc_secure=False
+                )
+            except Exception as e:
+                logger.warning(f"Failed to connect with gRPC, trying HTTP only: {e}")
+                # Fall back to HTTP only
+                client = weaviate.connect_to_custom(
+                    http_host=host,
+                    http_port=port,
+                    http_secure=False
+                )
         
         logger.info(f"Connected to Weaviate at {weaviate_url}")
         return client

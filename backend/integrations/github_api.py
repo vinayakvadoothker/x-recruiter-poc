@@ -41,7 +41,7 @@ class GitHubAPIClient:
         
         self.base_url = "https://api.github.com"
         self.headers = {
-            "Authorization": f"token {self.token}",
+            "Authorization": f"Bearer {self.token}",  # Use Bearer for fine-grained tokens
             "Accept": "application/vnd.github.v3+json"
         }
         self.client = httpx.AsyncClient(timeout=30.0)
@@ -126,24 +126,31 @@ class GitHubAPIClient:
         self,
         username: str,
         sort: str = "updated",
-        per_page: int = 30
+        per_page: int = 100,
+        max_repos: int = 100
     ) -> List[Dict]:
         """
-        Get repositories for a GitHub user.
+        Get repositories for a GitHub user (with pagination).
         
         Args:
             username: GitHub username
             sort: Sort order ("updated", "created", "stars", "forks")
             per_page: Number of repos per page (max 100)
+            max_repos: Maximum number of repos to retrieve
         
         Returns:
             List of repository dictionaries
         """
+        all_repos = []
+        page = 1
+        
+        while len(all_repos) < max_repos:
         url = f"{self.base_url}/users/{username}/repos"
         params = {
             "sort": sort,
             "per_page": min(per_page, 100),
-            "page": 1
+                "page": page,
+                "type": "all"  # Get all repos (public, private if accessible)
         }
         
         try:
@@ -155,13 +162,139 @@ class GitHubAPIClient:
             
             # Handle both list and paginated responses
             if isinstance(repos, list):
-                return repos
+                    page_repos = repos
             else:
-                return repos.get("items", [])
+                    page_repos = repos.get("items", [])
+                
+                if not page_repos:
+                    break
+                
+                all_repos.extend(page_repos)
+                
+                # If we got fewer than per_page, we're done
+                if len(page_repos) < per_page:
+                    break
+                
+                page += 1
+                
+            except Exception as e:
+                logger.error(f"Error getting repos for {username} (page {page}): {e}")
+                break
+        
+        logger.info(f"Retrieved {len(all_repos)} repos for {username}")
+        return all_repos[:max_repos]
+    
+    async def get_repo_readme(self, owner: str, repo: str) -> Optional[str]:
+        """
+        Get README content for a repository.
+        
+        Tries multiple README filenames: README.md, README, README.txt, etc.
+        
+        Args:
+            owner: Repository owner username
+            repo: Repository name
+        
+        Returns:
+            README content as string, or None if not found
+        """
+        readme_names = ["README.md", "README", "README.txt", "readme.md", "readme"]
+        
+        for readme_name in readme_names:
+            try:
+                url = f"{self.base_url}/repos/{owner}/{repo}/contents/{readme_name}"
+                response = await retry_with_backoff(
+                    self._make_get_request,
+                    url=url
+                )
+                
+                # GitHub returns base64 encoded content
+                if response.get("content"):
+                    import base64
+                    content = base64.b64decode(response["content"]).decode('utf-8', errors='ignore')
+                    logger.info(f"Retrieved README for {owner}/{repo}")
+                    return content
+                    
+            except Exception as e:
+                # Try next README name
+                continue
+        
+        logger.debug(f"No README found for {owner}/{repo}")
+        return None
+    
+    async def get_repo_code_search(
+        self,
+        owner: str,
+        repo: str,
+        query: str,
+        language: Optional[str] = None
+    ) -> List[Dict]:
+        """
+        Search for relevant code in a repository.
+        
+        Uses GitHub Code Search API to find relevant code snippets.
+        
+        Args:
+            owner: Repository owner username
+            repo: Repository name
+            query: Search query (e.g., "embedding", "vector similarity")
+            language: Optional language filter (e.g., "python")
+        
+        Returns:
+            List of code search results with file paths and snippets
+        """
+        search_query = f"{query} in:file repo:{owner}/{repo}"
+        if language:
+            search_query += f" language:{language}"
+        
+        url = f"{self.base_url}/search/code"
+        params = {"q": search_query}
+        
+        # Use text-match format for code snippets
+        headers = {
+            **self.headers,
+            "Accept": "application/vnd.github.text-match+json"
+        }
+        
+        try:
+            response = await retry_with_backoff(
+                self._make_get_request_with_headers,
+                url=url,
+                params=params,
+                headers=headers
+            )
+            
+            items = response.get("items", [])
+            logger.info(f"Found {len(items)} code matches for {query} in {owner}/{repo}")
+            return items
             
         except Exception as e:
-            logger.error(f"Error getting repos for {username}: {e}")
+            logger.error(f"Error searching code in {owner}/{repo}: {e}")
             return []
+    
+    async def _make_get_request_with_headers(
+        self,
+        url: str,
+        params: Optional[Dict] = None,
+        headers: Optional[Dict] = None
+    ) -> Dict:
+        """
+        Make a GET request with custom headers.
+        
+        Args:
+            url: Full URL to request
+            params: Query parameters
+            headers: Custom headers (merged with default headers)
+        
+        Returns:
+            Response dictionary from API
+        """
+        request_headers = {**self.headers}
+        if headers:
+            request_headers.update(headers)
+        
+        response = await self.client.get(url, headers=request_headers, params=params)
+        handle_api_error(response, "GitHub API request failed")
+        return response.json()
     
     async def get_repo_languages(self, owner: str, repo: str) -> Dict[str, int]:
         """

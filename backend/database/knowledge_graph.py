@@ -35,18 +35,24 @@ Why this abstraction layer:
    - Our approach: Always generate embeddings when adding/updating
 
 Design Decisions:
-- **In-memory metadata store**: Fast for MVP, can upgrade to PostgreSQL later
+- **In-memory metadata store**: Only for candidates (not in PostgreSQL yet)
+- **PostgreSQL for teams/interviewers/positions**: Source of truth for relational data
+- **Weaviate for embeddings**: All profile types get embeddings for similarity/matching
 - **Separate methods per profile type**: Clear API, type-safe
 - **Relationship helpers**: get_team_members(), get_position_candidates(), etc.
 - **Update triggers re-embedding**: Ensures embeddings stay in sync with data
 - **Modular design**: CRUD and relationships split into separate modules
 """
 
+import logging
 from typing import Dict, Optional
 from backend.database.vector_db_client import VectorDBClient
 from backend.embeddings import RecruitingKnowledgeGraphEmbedder
 from backend.database.kg_crud import KnowledgeGraphCRUD
 from backend.database.kg_relationships import KnowledgeGraphRelationships
+from backend.database.postgres_client import PostgresClient
+
+logger = logging.getLogger(__name__)
 
 
 class KnowledgeGraph:
@@ -54,14 +60,16 @@ class KnowledgeGraph:
     Knowledge graph abstraction for recruiting domain.
     
     Handles 4 profile types: Candidates, Teams, Interviewers, Positions
-    Uses vector DB for embeddings, in-memory dict for metadata.
+    - Candidates: Stored in Weaviate + in-memory metadata_store (not in PostgreSQL yet)
+    - Teams/Interviewers/Positions: Stored in PostgreSQL (source of truth) + Weaviate (embeddings)
     Automatically generates embeddings when adding/updating profiles.
     """
     
     def __init__(self, 
                  vector_db: Optional[VectorDBClient] = None,
                  embedder: Optional[RecruitingKnowledgeGraphEmbedder] = None,
-                 url: Optional[str] = None):
+                 url: Optional[str] = None,
+                 postgres_client: Optional[PostgresClient] = None):
         """
         Initialize knowledge graph.
         
@@ -69,13 +77,23 @@ class KnowledgeGraph:
             vector_db: Vector DB client (defaults to new instance)
             embedder: Embedder instance (defaults to new instance)
             url: Weaviate URL (used if vector_db is None)
+            postgres_client: PostgreSQL client (for teams/interviewers/positions - source of truth)
         """
         self.vector_db = vector_db or VectorDBClient(url=url)
         self.embedder = embedder or RecruitingKnowledgeGraphEmbedder()
-        self.metadata_store: Dict[str, Dict] = {}
+        self.metadata_store: Dict[str, Dict] = {}  # Only for candidates (not in PostgreSQL yet)
+        
+        # Try to get PostgreSQL client if not provided
+        if postgres_client is None:
+            try:
+                from backend.database.postgres_client import PostgresClient
+                postgres_client = PostgresClient()
+            except Exception as e:
+                logger.warning(f"Could not initialize PostgreSQL client: {e}. Teams/interviewers will not be available.")
+                postgres_client = None
         
         # Initialize CRUD and relationships
-        self.crud = KnowledgeGraphCRUD(self.vector_db, self.embedder, self.metadata_store)
+        self.crud = KnowledgeGraphCRUD(self.vector_db, self.embedder, self.metadata_store, postgres_client)
         self.relationships = KnowledgeGraphRelationships(self.crud)
     
     # Delegate all methods to CRUD and relationships

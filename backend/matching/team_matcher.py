@@ -67,12 +67,16 @@ class TeamPersonMatcher:
     Matches candidates to teams and interviewers.
     
     Uses multi-criteria evaluation:
-    - Embedding similarity (40% weight)
-    - Team needs match (30% weight)
-    - Expertise match (20% weight)
-    - Success rates (10% weight)
+    - Embedding similarity (30% weight)
+    - Team needs match (25% weight)
+    - Expertise match (15% weight)
+    - arXiv research (25% weight) - HEAVILY WEIGHTED
+    - Success rates/capacity (5% weight)
     
     Uses bandit algorithm for principled selection.
+    
+    Note: arXiv research is heavily weighted because published research indicates
+    strong technical depth, research experience, and proven contributions.
     """
     
     def __init__(
@@ -100,10 +104,11 @@ class TeamPersonMatcher:
         Find best team for candidate.
         
         Evaluates all teams using:
-        - Embedding similarity (40%)
-        - Team needs match (30%)
-        - Expertise match (20%)
-        - Team size/capacity (10%)
+        - Embedding similarity (30%)
+        - Team needs match (25%)
+        - Expertise match (15%)
+        - arXiv research (25%) - HEAVILY WEIGHTED
+        - Team size/capacity (5%)
         
         Uses bandit for final selection.
         
@@ -141,16 +146,21 @@ class TeamPersonMatcher:
             needs_match = self._check_needs_match(candidate, team)
             expertise_match = self._check_expertise_match(candidate, team)
             
+            # arXiv research boost (HEAVILY WEIGHTED - research is a strong signal)
+            arxiv_boost = self._check_arxiv_research(candidate)
+            
             # Team capacity factor (prefer teams with open positions)
             open_positions = len(team.get('open_positions', []))
             capacity_factor = min(open_positions / 3.0, 1.0) if open_positions > 0 else 0.5
             
-            # Weighted score
+            # Weighted score - arXiv research gets 25% weight (very significant)
+            # Adjusted weights: similarity 30%, needs 25%, expertise 15%, arxiv 25%, capacity 5%
             score = (
-                similarity * 0.40 +
-                needs_match * 0.30 +
-                expertise_match * 0.20 +
-                capacity_factor * 0.10
+                similarity * 0.30 +
+                needs_match * 0.25 +
+                expertise_match * 0.15 +
+                arxiv_boost * 0.25 +  # HEAVY WEIGHT for arXiv research
+                capacity_factor * 0.05
             )
             
             matches.append({
@@ -160,6 +170,7 @@ class TeamPersonMatcher:
                 "similarity": similarity,
                 "needs_match": needs_match,
                 "expertise_match": expertise_match,
+                "arxiv_boost": arxiv_boost,
                 "capacity_factor": capacity_factor
             })
         
@@ -185,6 +196,7 @@ class TeamPersonMatcher:
             "similarity": best_match['similarity'],
             "needs_match": best_match['needs_match'],
             "expertise_match": best_match['expertise_match'],
+            "arxiv_boost": best_match.get('arxiv_boost', 0.0),
             "reasoning": self._generate_team_reasoning(candidate, best_match['team'], best_match)
         }
     
@@ -193,9 +205,10 @@ class TeamPersonMatcher:
         Find best interviewer for candidate within a team.
         
         Evaluates team's interviewers using:
-        - Embedding similarity (40%)
-        - Expertise match (30%)
-        - Success rate (20%)
+        - Embedding similarity (30%)
+        - Expertise match (20%)
+        - arXiv research (25%) - HEAVILY WEIGHTED
+        - Success rate (15%)
         - Cluster success rate (10%)
         
         Uses bandit for final selection.
@@ -241,6 +254,9 @@ class TeamPersonMatcher:
             expertise_match = self._check_expertise_match(candidate, interviewer)
             success_rate = interviewer.get('success_rate', 0.5)
             
+            # arXiv research boost (HEAVILY WEIGHTED)
+            arxiv_boost = self._check_arxiv_research(candidate)
+            
             # Cluster success rate (if candidate has ability_cluster)
             candidate_cluster = candidate.get('ability_cluster')
             cluster_success = 0.5  # Default
@@ -249,11 +265,13 @@ class TeamPersonMatcher:
                     candidate_cluster, 0.5
                 )
             
-            # Weighted score
+            # Weighted score - arXiv research gets 25% weight
+            # Adjusted weights: similarity 30%, expertise 20%, arxiv 25%, success 15%, cluster 10%
             score = (
-                similarity * 0.40 +
-                expertise_match * 0.30 +
-                success_rate * 0.20 +
+                similarity * 0.30 +
+                expertise_match * 0.20 +
+                arxiv_boost * 0.25 +  # HEAVY WEIGHT for arXiv research
+                success_rate * 0.15 +
                 cluster_success * 0.10
             )
             
@@ -263,6 +281,7 @@ class TeamPersonMatcher:
                 "score": score,
                 "similarity": similarity,
                 "expertise_match": expertise_match,
+                "arxiv_boost": arxiv_boost,
                 "success_rate": success_rate,
                 "cluster_success": cluster_success
             })
@@ -289,6 +308,7 @@ class TeamPersonMatcher:
             "match_score": best_match['score'],
             "similarity": best_match['similarity'],
             "expertise_match": best_match['expertise_match'],
+            "arxiv_boost": best_match.get('arxiv_boost', 0.0),
             "success_rate": best_match['success_rate'],
             "cluster_success": best_match['cluster_success'],
             "reasoning": self._generate_person_reasoning(candidate, best_match['interviewer'], best_match)
@@ -334,6 +354,69 @@ class TeamPersonMatcher:
         overlap = len(candidate_domains.intersection(other_expertise))
         return min(overlap / len(other_expertise), 1.0)
     
+    def _check_arxiv_research(self, candidate: Dict[str, Any]) -> float:
+        """
+        Check if candidate has arXiv research and return boost factor.
+        
+        arXiv research is heavily weighted because it indicates:
+        - Strong technical depth
+        - Research experience
+        - Published contributions
+        - Academic rigor
+        
+        Args:
+            candidate: Candidate profile
+        
+        Returns:
+            Boost factor (0.0-1.0), where 1.0 = significant arXiv research
+        """
+        papers = candidate.get('papers', [])
+        arxiv_author_id = candidate.get('arxiv_author_id')
+        orcid_id = candidate.get('orcid_id')
+        research_contributions = candidate.get('research_contributions', [])
+        
+        # Check if candidate has arXiv research
+        has_arxiv = bool(
+            papers or 
+            arxiv_author_id or 
+            orcid_id or
+            research_contributions
+        )
+        
+        if not has_arxiv:
+            return 0.0
+        
+        # Calculate boost based on research depth
+        boost = 0.0
+        
+        # Base boost for having any arXiv research
+        if papers or arxiv_author_id or orcid_id:
+            boost += 0.3
+        
+        # Additional boost for number of papers
+        if papers:
+            paper_count = len(papers)
+            if paper_count >= 20:
+                boost += 0.4  # Very experienced researcher
+            elif paper_count >= 10:
+                boost += 0.3  # Experienced researcher
+            elif paper_count >= 5:
+                boost += 0.2  # Active researcher
+            else:
+                boost += 0.1  # Some research
+        
+        # Boost for research contributions (actual work, not just papers)
+        if research_contributions:
+            boost += 0.2
+        
+        # Boost for having research areas/domains from arXiv
+        research_areas = candidate.get('research_areas', [])
+        if research_areas:
+            boost += 0.1
+        
+        # Cap at 1.0
+        return min(boost, 1.0)
+    
     def _generate_team_reasoning(
         self,
         candidate: Dict[str, Any],
@@ -361,6 +444,16 @@ class TeamPersonMatcher:
         
         if match_data['expertise_match'] >= 0.7:
             parts.append(f"Strong expertise overlap ({match_data['expertise_match']:.1%})")
+        
+        # Highlight arXiv research boost
+        arxiv_boost = match_data.get('arxiv_boost', 0.0)
+        if arxiv_boost >= 0.5:
+            papers = candidate.get('papers', [])
+            paper_count = len(papers) if papers else 0
+            if paper_count > 0:
+                parts.append(f"Strong arXiv research background ({paper_count} papers, boost: {arxiv_boost:.1%})")
+            else:
+                parts.append(f"arXiv research background (boost: {arxiv_boost:.1%})")
         
         if len(team.get('open_positions', [])) > 0:
             parts.append(f"Team has {len(team.get('open_positions', []))} open position(s)")
@@ -394,6 +487,16 @@ class TeamPersonMatcher:
         
         if match_data['expertise_match'] >= 0.7:
             parts.append(f"Strong expertise match ({match_data['expertise_match']:.1%})")
+        
+        # Highlight arXiv research boost
+        arxiv_boost = match_data.get('arxiv_boost', 0.0)
+        if arxiv_boost >= 0.5:
+            papers = candidate.get('papers', [])
+            paper_count = len(papers) if papers else 0
+            if paper_count > 0:
+                parts.append(f"Strong arXiv research background ({paper_count} papers, boost: {arxiv_boost:.1%})")
+            else:
+                parts.append(f"arXiv research background (boost: {arxiv_boost:.1%})")
         
         if match_data['success_rate'] >= 0.6:
             parts.append(f"High success rate ({match_data['success_rate']:.1%})")

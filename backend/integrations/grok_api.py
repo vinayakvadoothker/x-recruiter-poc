@@ -169,7 +169,7 @@ Example format:
         """
         url = f"{self.base_url}/chat/completions"
         payload = {
-            "model": "grok-4-latest",  # Using latest Grok 4 model from xAI
+            "model": "grok-4-1-fast-reasoning",  # Using latest Grok 4 model from xAI
             "messages": [
                 {
                     "role": "user",
@@ -202,6 +202,87 @@ Example format:
         response = await self.client.post(url, headers=self.headers, json=payload)
         handle_api_error(response, "Grok API embeddings request failed")
         return response.json()
+    
+    async def generate_x_post(self, position_data: Dict) -> str:
+        """
+        Generate an X (Twitter) post for a job position using Grok.
+        
+        The generated post will always end with "interested" (case-insensitive check).
+        
+        Args:
+            position_data: Position dictionary with title, description, must_haves, etc.
+        
+        Returns:
+            Generated post text (guaranteed to end with "interested")
+        """
+        title = position_data.get('title', 'Position')
+        description = position_data.get('description', '')
+        must_haves = position_data.get('must_haves', [])
+        nice_to_haves = position_data.get('nice_to_haves', [])
+        experience_level = position_data.get('experience_level', '')
+        tech_stack = position_data.get('tech_stack', [])
+        domains = position_data.get('domains', [])
+        
+        # Build position summary for prompt
+        position_summary = f"Title: {title}\n"
+        if description:
+            position_summary += f"Description: {description}\n"
+        if must_haves:
+            position_summary += f"Must-have skills: {', '.join(must_haves)}\n"
+        if nice_to_haves:
+            position_summary += f"Nice-to-have skills: {', '.join(nice_to_haves)}\n"
+        if experience_level:
+            position_summary += f"Experience level: {experience_level}\n"
+        if tech_stack:
+            position_summary += f"Tech stack: {', '.join(tech_stack)}\n"
+        if domains:
+            position_summary += f"Domains: {', '.join(domains)}\n"
+        
+        prompt = f"""Generate an engaging X (Twitter) post to recruit for this position at xAI.
+
+Position details:
+{position_summary}
+
+Requirements:
+- Make it engaging and compelling
+- Highlight key technical requirements
+- Keep it concise (under 280 characters)
+- Use appropriate hashtags
+- The post MUST end with the word "interested" (case-insensitive)
+- Format: End with something like "Comment 'interested' if you're interested" or "Reply 'interested' if interested"
+
+Generate the post text only (no markdown, no code blocks):"""
+        
+        try:
+            response = await retry_with_backoff(
+                self._make_chat_request,
+                prompt=prompt
+            )
+            
+            content = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+            
+            # Clean up the response (remove markdown code blocks if present)
+            if "```" in content:
+                content = content.split("```")[-1].split("```")[0].strip()
+            
+            # Ensure it ends with "interested" (case-insensitive)
+            content = content.strip()
+            if not content.lower().endswith("interested"):
+                # Add it if missing
+                if not content.endswith(" "):
+                    content += " "
+                content += "Comment 'interested' if you're interested"
+            
+            return content
+            
+        except Exception as e:
+            logger.error(f"Error generating X post: {e}")
+            # Fallback post
+            fallback = f"🚀 We're hiring a {title} at xAI! "
+            if must_haves:
+                fallback += f"Looking for: {', '.join(must_haves[:3])}. "
+            fallback += "Comment 'interested' if you're interested"
+            return fallback
     
     async def close(self):
         """Close the HTTP client."""

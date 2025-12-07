@@ -7,6 +7,7 @@ conversation information.
 """
 
 from .phone_screen_engine import PhoneScreenDecisionEngine
+from .phone_screen_interviewer import PhoneScreenInterviewer
 
-__all__ = ['PhoneScreenDecisionEngine']
+__all__ = ['PhoneScreenDecisionEngine', 'PhoneScreenInterviewer']
 

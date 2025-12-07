@@ -38,9 +38,6 @@ WEAVIATE_URL=http://localhost:8080
 - Entity extraction from role descriptions and candidate profiles
 - **CRITICAL: Natural language feedback parsing for self-improving agent (Phase 10)**
 
-```bash
-GROK_API_KEY=xai-SlvY0Bos1oOzap6Ed3tEygd3ZiL3V8fSihP5uPW7oMpO16smJivCI6fk3AVsiGCrmmbNIYPVJZfVjMgs
-```
 
 **Where it's used:**
 - `backend/integrations/grok_api.py` - Grok API client
@@ -67,53 +64,100 @@ NO keyword matching - all feedback parsing uses Grok API for accurate sentiment 
 
 ---
 
-### 3. GitHub API (OPTIONAL but recommended)
+### 3. GitHub API (REQUIRED for outbound gathering)
 
-**Purpose:** Candidate sourcing from GitHub repositories
+**Purpose:** Candidate sourcing and data gathering from GitHub repositories
 
-```bash
-GITHUB_TOKEN=your_github_token_here
-```
 
 **Where it's used:**
 - `backend/integrations/github_api.py` - GitHub API client
-- `backend/orchestration/candidate_sourcer.py` - Candidate sourcing
+- `backend/orchestration/outbound_gatherer.py` - GitHub data gathering
 
 **How to get:**
-- Go to: https://github.com/settings/tokens
-- Generate a personal access token with `public_repo` scope
+- Go to: https://github.com/settings/tokens?type=beta (Fine-grained tokens)
+- Or: https://github.com/settings/tokens (Classic tokens)
+- Generate a personal access token with:
+  - **Fine-grained**: Repository permissions → Contents: Read-only, Metadata: Read-only
+  - **Classic**: `public_repo` scope
 
 **Required for:**
-- ⚠️ Candidate sourcing from GitHub (optional - can use mock data)
+- ✅ GitHub data gathering (Phase 2)
+- ✅ Reading public repositories
+- ✅ Analyzing README files
+- ✅ Extracting relevant code
 
 **Error if missing:**
 - `ValueError: GitHub token required. Set GITHUB_TOKEN environment variable`
-- Pipeline will fail if trying to source from GitHub without this
+- GitHub gathering will be skipped if token not available
 
 ---
 
-### 4. X API (OPTIONAL - Future use)
+### 4. X API (REQUIRED for outbound gathering)
 
-**Purpose:** X (Twitter) API for candidate sourcing and outreach
+**Purpose:** X (Twitter) API for candidate sourcing and gathering profile data
 
 ```bash
-X_API_KEY=your_x_api_key_here
+X_API_KEY=your_consumer_key_here
+X_API_SECRET=your_consumer_key_secret_here
+X_ACCESS_TOKEN=your_access_token_here
+X_ACCESS_TOKEN_SECRET=your_access_token_secret_here
+X_BEARER_TOKEN=your_bearer_token_here
 ```
 
 **Where it's used:**
 - `backend/integrations/x_api.py` - X API client
-- `backend/orchestration/candidate_sourcer.py` - X candidate sourcing
+- `backend/orchestration/outbound_gatherer.py` - X candidate data gathering
 
 **How to get:**
 - Apply for X API access at: https://developer.twitter.com/
+- Create an app in X Developer Portal
+- Get Consumer Key (API Key) and Consumer Key Secret (API Secret)
+- Generate Access Token and Access Token Secret
+- Generate Bearer Token for OAuth 2.0 endpoints
 
 **Required for:**
-- ❌ Not needed for hackathon (using simulator instead)
-- Future production use only
+- ✅ Outbound candidate gathering from X (Phase 3)
+- ✅ Extracting GitHub/LinkedIn/arXiv links from X posts
+- ✅ Extracting technical content from X posts
+
+**Error if missing:**
+- `ValueError: X API credentials required. Set X_API_KEY, X_API_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET, and X_BEARER_TOKEN environment variables`
 
 ---
 
-### 5. Logging (OPTIONAL)
+### 5. Vapi API (REQUIRED for phone screen interviews)
+
+**Purpose:** Automated phone screen interviews via voice calls
+
+```bash
+VAPI_PRIVATE_KEY=your_vapi_private_key_here
+VAPI_PUBLIC_KEY=your_vapi_public_key_here
+VAPI_PHONE_NUMBER_ID=your_vapi_phone_number_id_here
+```
+
+**Where it's used:**
+- `backend/integrations/vapi_api.py` - Vapi API client
+- `backend/interviews/phone_screen_interviewer.py` - Phone screen interviewer
+- `backend/api/routes.py` - Phone screen API endpoint
+
+**How to get:**
+- Sign up at: https://vapi.ai/
+- Get API keys from Vapi dashboard
+- Get phone number ID from Vapi dashboard (phone numbers section)
+- API endpoint: `https://api.vapi.ai`
+
+**Required for:**
+- ✅ Automated phone screen interviews
+- ✅ Voice call management
+- ✅ Call transcript retrieval
+
+**Error if missing:**
+- `ValueError: Vapi private API key required. Set VAPI_PRIVATE_KEY environment variable`
+- `ValueError: Vapi phone number ID required. Set VAPI_PHONE_NUMBER_ID environment variable`
+
+---
+
+### 6. Logging (OPTIONAL)
 
 **Purpose:** Control logging level
 
@@ -151,8 +195,17 @@ GROK_API_KEY=your_grok_api_key_here
 # GitHub API (OPTIONAL but recommended)
 GITHUB_TOKEN=your_github_token_here
 
-# X API (OPTIONAL - Future use)
-# X_API_KEY=your_x_api_key_here
+# X API (REQUIRED for outbound gathering)
+X_API_KEY=your_consumer_key_here
+X_API_SECRET=your_consumer_key_secret_here
+X_ACCESS_TOKEN=your_access_token_here
+X_ACCESS_TOKEN_SECRET=your_access_token_secret_here
+X_BEARER_TOKEN=your_bearer_token_here
+
+# Vapi API (REQUIRED for phone screen interviews)
+VAPI_PRIVATE_KEY=your_vapi_private_key_here
+VAPI_PUBLIC_KEY=your_vapi_public_key_here
+VAPI_PHONE_NUMBER_ID=your_vapi_phone_number_id_here
 
 # Logging (OPTIONAL)
 LOG_LEVEL=INFO
@@ -173,7 +226,11 @@ LOG_LEVEL=INFO
    - Go to https://github.com/settings/tokens
    - Generate token with `public_repo` scope
    - Copy to `GITHUB_TOKEN`
-5. **Verify `.env` is in `.gitignore`** (should already be there)
+5. **Get Vapi API keys (required for phone screens):**
+   - Sign up at https://vapi.ai/
+   - Get private key, public key, and phone number ID from dashboard
+   - Copy to `VAPI_PRIVATE_KEY`, `VAPI_PUBLIC_KEY`, and `VAPI_PHONE_NUMBER_ID`
+6. **Verify `.env` is in `.gitignore`** (should already be there)
 
 ---
 
@@ -190,7 +247,7 @@ python3 -c "
 import os
 from dotenv import load_dotenv
 load_dotenv()
-required = ['WEAVIATE_URL', 'GROK_API_KEY']
+required = ['WEAVIATE_URL', 'GROK_API_KEY', 'VAPI_PRIVATE_KEY', 'VAPI_PHONE_NUMBER_ID']
 missing = [v for v in required if not os.getenv(v)]
 if missing:
     print(f'❌ Missing: {missing}')

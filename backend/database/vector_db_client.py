@@ -46,6 +46,7 @@ import logging
 import json
 from typing import List, Dict, Any, Optional
 import numpy as np
+from weaviate.util import generate_uuid5
 from backend.database.weaviate_connection import create_weaviate_client
 from backend.database.weaviate_schema import create_profile_schemas
 
@@ -77,6 +78,7 @@ class VectorDBClient:
         """
         self.url = url
         self.client = create_weaviate_client(url)
+        # Schema creation happens automatically, but we don't need to store the result
         create_profile_schemas(self.client)
     
     def store_candidate(self, candidate_id: str, embedding: np.ndarray, metadata: Dict[str, Any]) -> bool:
@@ -107,7 +109,10 @@ class VectorDBClient:
     
     def _store(self, class_name: str, profile_id: str, embedding: np.ndarray, metadata: Dict[str, Any]) -> bool:
         """
-        Internal method to store embedding in Weaviate.
+        Internal method to store/update embedding in Weaviate.
+        
+        Uses deterministic UUIDs based on profile_id to prevent duplicates.
+        If a record with the same profile_id exists, it will be updated.
         
         Args:
             class_name: Weaviate collection name (Candidate, Team, Interviewer, Position)
@@ -132,17 +137,50 @@ class VectorDBClient:
             
             metadata_json = json.dumps(metadata, default=json_serializer)
             
-            # Get collection and insert
+            # Extract company_id from metadata (for multi-tenancy filtering)
+            company_id = metadata.get('company_id', 'xai')  # Default to 'xai' for demo
+            
+            # Generate deterministic UUID based on profile_id and class_name
+            # This ensures the same profile_id always gets the same UUID, preventing duplicates
+            # Format: "{class_name}:{profile_id}" to ensure uniqueness across classes
+            unique_identifier = f"{class_name}:{profile_id}"
+            obj_uuid = generate_uuid5(unique_identifier)
+            
+            # Get collection
             collection = self.client.collections.get(class_name)
-            collection.data.insert(
+            
+            # Use replace for upsert behavior: replaces if exists, inserts if not
+            # This prevents duplicates by using deterministic UUIDs
+            try:
+                collection.data.replace(
+                    uuid=obj_uuid,
                 properties={
                     "profile_id": profile_id,
+                        "company_id": company_id,
                     "metadata": metadata_json
                 },
                 vector=vector
             )
+                logger.debug(f"Upserted {class_name} profile: {profile_id} (UUID: {obj_uuid})")
+            except Exception as replace_error:
+                # If replace fails (object doesn't exist), try insert
+                # This handles the edge case where replace doesn't work for new objects
+                try:
+                    collection.data.insert(
+                        properties={
+                            "profile_id": profile_id,
+                            "company_id": company_id,
+                            "metadata": metadata_json
+                        },
+                        vector=vector,
+                        uuid=obj_uuid
+                    )
+                    logger.debug(f"Inserted {class_name} profile: {profile_id} (UUID: {obj_uuid})")
+                except Exception as insert_error:
+                    # If both fail, log error and return False
+                    logger.error(f"Both replace and insert failed for {class_name} profile {profile_id}: {insert_error}")
+                    raise
             
-            logger.debug(f"Stored {class_name} profile: {profile_id}")
             return True
         except Exception as e:
             logger.error(f"Failed to store {class_name} profile {profile_id}: {e}")
@@ -216,6 +254,257 @@ class VectorDBClient:
         except Exception as e:
             logger.error(f"Search failed for {class_name}: {e}")
             return []
+    
+    def get_all_embeddings(self, class_name: str, limit: int = 1000) -> List[Dict[str, Any]]:
+        """
+        Get all embeddings for a profile type.
+        
+        Uses the same pattern as _search - fetch objects via HTTP, then get vectors separately.
+        This avoids gRPC requirements and matches our existing search implementation.
+        
+        Args:
+            class_name: Weaviate collection name (Candidate, Team, Interviewer, Position)
+            limit: Maximum number of results to return
+        
+        Returns:
+            List of embeddings with profile_id, embedding vector, and metadata
+        """
+        try:
+            collection = self.client.collections.get(class_name)
+            parsed_results = []
+            
+            # Use fetch_objects (HTTP only, same as _search method)
+            # This matches our existing pattern and doesn't require gRPC
+            results = collection.query.fetch_objects(limit=limit)
+            
+            for obj in results.objects:
+                try:
+                    profile_id = obj.properties.get("profile_id")
+                    company_id = obj.properties.get("company_id")
+                    metadata = json.loads(obj.properties.get("metadata", "{}"))
+                    
+                    # Fetch vector separately using fetch_object_by_id (HTTP only, no gRPC needed)
+                    # This matches the pattern we use in _search method
+                    vector = None
+                    try:
+                        obj_with_vector = collection.query.fetch_object_by_id(
+                            uuid=obj.uuid,
+                            include_vector=True
+                        )
+                        if obj_with_vector and hasattr(obj_with_vector, 'vector') and obj_with_vector.vector:
+                            if isinstance(obj_with_vector.vector, dict):
+                                vector = obj_with_vector.vector.get("default") or next(iter(obj_with_vector.vector.values()), None)
+                            elif isinstance(obj_with_vector.vector, list):
+                                vector = obj_with_vector.vector
+                    except Exception as vec_error:
+                        logger.debug(f"Could not fetch vector for {profile_id}: {vec_error}")
+                        continue  # Skip this object if we can't get its vector
+                    
+                    if vector and len(vector) > 0:
+                        parsed_results.append({
+                            "profile_id": profile_id,
+                            "company_id": company_id,
+                            "embedding": vector,  # 768-dim vector
+                            "metadata": metadata
+                        })
+                except Exception as e:
+                    logger.warning(f"Error parsing object from {class_name}: {e}")
+                    continue
+            
+            logger.debug(f"Retrieved {len(parsed_results)} embeddings from {class_name}")
+            return parsed_results
+        except Exception as e:
+            logger.error(f"Failed to get embeddings from {class_name}: {e}")
+            return []
+    
+    def get_embedding(self, class_name: str, profile_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get a single embedding by profile_id.
+        
+        Args:
+            class_name: Weaviate collection name (Candidate, Team, Interviewer, Position)
+            profile_id: Profile identifier
+        
+        Returns:
+            Dictionary with profile_id, embedding vector, and metadata, or None if not found
+        """
+        try:
+            collection = self.client.collections.get(class_name)
+            
+            # Generate the same UUID that was used when storing
+            unique_identifier = f"{class_name}:{profile_id}"
+            obj_uuid = generate_uuid5(unique_identifier)
+            
+            # Fetch object with vector
+            obj = collection.query.fetch_object_by_id(
+                uuid=obj_uuid,
+                include_vector=True
+            )
+            
+            if not obj:
+                return None
+            
+            # Extract vector
+            vector = None
+            if hasattr(obj, 'vector') and obj.vector:
+                if isinstance(obj.vector, dict):
+                    vector = obj.vector.get("default") or next(iter(obj.vector.values()), None)
+                elif isinstance(obj.vector, list):
+                    vector = obj.vector
+            
+            # Extract metadata
+            metadata = json.loads(obj.properties.get("metadata", "{}"))
+            company_id = obj.properties.get("company_id")
+            
+            if vector and len(vector) > 0:
+                return {
+                    "profile_id": profile_id,
+                    "company_id": company_id,
+                    "embedding": vector,  # 768-dim vector
+                    "metadata": metadata
+                }
+            
+            return None
+        except Exception as e:
+            logger.error(f"Failed to get embedding for {class_name} profile {profile_id}: {e}")
+            return None
+    
+    def find_similar_embeddings(self, class_name: str, profile_id: str, top_k: int = 10) -> List[Dict[str, Any]]:
+        """
+        Find similar embeddings to a given profile.
+        
+        Args:
+            class_name: Weaviate collection name (Candidate, Team, Interviewer, Position)
+            profile_id: Profile identifier to find similarities for
+            top_k: Number of similar results to return
+        
+        Returns:
+            List of similar profiles with profile_id, metadata, similarity, and distance
+        """
+        try:
+            # First, get the embedding for the given profile
+            profile_embedding = self.get_embedding(class_name, profile_id)
+            if not profile_embedding or not profile_embedding.get("embedding"):
+                logger.warning(f"No embedding found for {class_name} profile {profile_id}")
+                return []
+            
+            embedding_vector = profile_embedding.get("embedding")
+            
+            # Use the existing _search method to find similar embeddings
+            # But exclude the original profile from results
+            results = self._search(class_name, np.array(embedding_vector), top_k + 1)
+            
+            # Filter out the original profile
+            filtered_results = [
+                r for r in results 
+                if r.get("profile_id") != profile_id
+            ][:top_k]
+            
+            return filtered_results
+        except Exception as e:
+            logger.error(f"Failed to find similar embeddings for {class_name} profile {profile_id}: {e}")
+            return []
+    
+    def delete_embedding(self, class_name: str, profile_id: str) -> bool:
+        """
+        Delete an embedding from Weaviate.
+        
+        Args:
+            class_name: Weaviate collection name (Candidate, Team, Interviewer, Position)
+            profile_id: Profile identifier to delete
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Generate deterministic UUID (same as used in _store)
+            unique_identifier = f"{class_name}:{profile_id}"
+            obj_uuid = generate_uuid5(unique_identifier)
+            
+            # Get collection
+            collection = self.client.collections.get(class_name)
+            
+            # Delete by UUID
+            collection.data.delete_by_id(uuid=obj_uuid)
+            logger.debug(f"Deleted {class_name} profile: {profile_id} (UUID: {obj_uuid})")
+            
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete {class_name} profile {profile_id}: {e}")
+            return False
+    
+    def find_similar_embeddings_across_types(self, class_name: str, profile_id: str, top_k_per_type: int = 5) -> Dict[str, List[Dict[str, Any]]]:
+        """
+        Find similar embeddings across all profile types.
+        
+        Args:
+            class_name: Weaviate collection name (Candidate, Team, Interviewer, Position)
+            profile_id: Profile identifier to find similarities for
+            top_k_per_type: Number of similar results to return per profile type
+        
+        Returns:
+            Dictionary mapping profile type to list of similar profiles
+        """
+        try:
+            # First, get the embedding for the given profile
+            profile_embedding = self.get_embedding(class_name, profile_id)
+            if not profile_embedding or not profile_embedding.get("embedding"):
+                logger.warning(f"No embedding found for {class_name} profile {profile_id}")
+                return {
+                    "candidates": [],
+                    "teams": [],
+                    "interviewers": [],
+                    "positions": []
+                }
+            
+            embedding_vector = np.array(profile_embedding.get("embedding"))
+            
+            # Search across all profile types
+            all_results = {
+                "candidates": [],
+                "teams": [],
+                "interviewers": [],
+                "positions": []
+            }
+            
+            # Map Weaviate class names to result keys
+            class_to_key = {
+                "Candidate": "candidates",
+                "Team": "teams",
+                "Interviewer": "interviewers",
+                "Position": "positions"
+            }
+            
+            for search_class_name in ["Candidate", "Team", "Interviewer", "Position"]:
+                try:
+                    # Search in this class
+                    results = self._search(search_class_name, embedding_vector, top_k_per_type + 1)
+                    
+                    # Filter out the original profile if searching in the same class
+                    filtered_results = [
+                        r for r in results 
+                        if not (search_class_name == class_name and r.get("profile_id") == profile_id)
+                    ][:top_k_per_type]
+                    
+                    # Add profile_type to each result
+                    for result in filtered_results:
+                        result["profile_type"] = search_class_name.lower()
+                    
+                    result_key = class_to_key.get(search_class_name, search_class_name.lower() + "s")
+                    all_results[result_key] = filtered_results
+                except Exception as e:
+                    logger.warning(f"Failed to search in {search_class_name}: {e}")
+                    continue
+            
+            return all_results
+        except Exception as e:
+            logger.error(f"Failed to find similar embeddings across types for {class_name} profile {profile_id}: {e}")
+            return {
+                "candidates": [],
+                "teams": [],
+                "interviewers": [],
+                "positions": []
+            }
     
     def close(self):
         """Close Weaviate connection."""
