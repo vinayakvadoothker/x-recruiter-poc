@@ -145,25 +145,25 @@ class GitHubAPIClient:
         page = 1
         
         while len(all_repos) < max_repos:
-        url = f"{self.base_url}/users/{username}/repos"
-        params = {
-            "sort": sort,
-            "per_page": min(per_page, 100),
+            url = f"{self.base_url}/users/{username}/repos"
+            params = {
+                "sort": sort,
+                "per_page": min(per_page, 100),
                 "page": page,
                 "type": "all"  # Get all repos (public, private if accessible)
-        }
-        
-        try:
-            repos = await retry_with_backoff(
-                self._make_get_request,
-                url=url,
-                params=params
-            )
+            }
             
-            # Handle both list and paginated responses
-            if isinstance(repos, list):
+            try:
+                repos = await retry_with_backoff(
+                    self._make_get_request,
+                    url=url,
+                    params=params
+                )
+                
+                # Handle both list and paginated responses
+                if isinstance(repos, list):
                     page_repos = repos
-            else:
+                else:
                     page_repos = repos.get("items", [])
                 
                 if not page_repos:
@@ -339,4 +339,3 @@ class GitHubAPIClient:
     async def close(self):
         """Close the HTTP client."""
         await self.client.aclose()
-

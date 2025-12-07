@@ -168,8 +168,10 @@ class RecruitingKnowledgeGraphEmbedder:
         This formatting emphasizes technical skills, experience depth, and
         project impact - the key factors for candidate matching.
         
+        Includes data from all sources: GitHub repos, arXiv papers, X posts, resume.
+        
         Args:
-            data: Candidate profile dictionary
+            data: Candidate profile dictionary (matching sample_candidates.py structure)
         
         Returns:
             Formatted text string optimized for embedding
@@ -177,19 +179,61 @@ class RecruitingKnowledgeGraphEmbedder:
         skills = ', '.join(data.get('skills', []))
         experience = ', '.join(data.get('experience', []))
         education = ', '.join(data.get('education', []))
+        domains = ', '.join(data.get('domains', []))
+        
+        # Format projects
         projects = ', '.join([
-            p.get('name', '') for p in data.get('projects', [])
+            p.get('name', '') or p.get('description', '') for p in data.get('projects', [])
         ])
+        
+        # Format GitHub repos (top repos by stars)
+        repos = data.get('repos', [])
+        top_repos = sorted(repos, key=lambda r: r.get('stars', 0), reverse=True)[:5] if repos else []
+        repo_descriptions = ', '.join([
+            f"{r.get('name', '')} ({r.get('language', '')})" for r in top_repos
+        ])
+        github_stats = data.get('github_stats') or {}
+        github_summary = f"{github_stats.get('total_repos', 0)} repos, {github_stats.get('total_stars', 0)} stars, {github_stats.get('total_commits', 0)} commits"
+        
+        # Format arXiv papers (top papers)
+        papers = data.get('papers', [])
+        top_papers = sorted(papers, key=lambda p: p.get('citation_count', 0) or 0, reverse=True)[:5] if papers else []
+        paper_titles = ', '.join([p.get('title', '')[:50] for p in top_papers])
+        arxiv_stats = data.get('arxiv_stats') or {}
+        arxiv_summary = f"{arxiv_stats.get('total_papers', 0)} papers, {arxiv_stats.get('total_citations', 0)} citations"
+        
+        # Format research areas
+        research_areas = ', '.join(data.get('research_areas', []))
+        
+        # Format resume summary (if available)
+        resume_text = data.get('resume_text', '')
+        resume_summary = resume_text[:200] + '...' if resume_text and len(resume_text) > 200 else resume_text
+        
+        # Format X posts summary
+        posts = data.get('posts', [])
+        x_summary = f"{len(posts)} posts" if posts else ""
         
         return f"""
         CANDIDATE PROFILE:
         Technical Skills: {skills}
-        Experience: {data.get('experience_years', 0)} years in {', '.join(data.get('domains', []))}
+        Experience: {data.get('experience_years', 0)} years in {domains}
         Experience Details: {experience}
         Education: {education}
-        Key Projects: {projects}
         Expertise Level: {data.get('expertise_level', 'Unknown')}
-        GitHub Activity: {data.get('github_stats', {}).get('total_commits', 0)} commits
+        
+        Key Projects: {projects}
+        
+        GitHub Activity: {github_summary}
+        Top Repositories: {repo_descriptions}
+        GitHub Languages: {', '.join(github_stats.get('languages', {}).keys()) if isinstance(github_stats.get('languages'), dict) else ''}
+        
+        Research: {arxiv_summary}
+        Research Areas: {research_areas}
+        Top Papers: {paper_titles}
+        
+        X Activity: {x_summary}
+        
+        Resume Summary: {resume_summary}
         """
     
     def embed_team(self, team_data: Dict[str, Any]) -> np.ndarray:

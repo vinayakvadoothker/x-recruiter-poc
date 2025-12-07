@@ -4,7 +4,7 @@ API route handlers for Grok Recruiter endpoints.
 
 import logging
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from typing import List, Dict, Any, Optional
 
@@ -630,6 +630,7 @@ def _sync_embeddings_internal() -> Dict:
     company_id = company_context.get_company_id()
     
     results = {
+        "candidates": {"created": 0, "updated": 0, "total": 0},
         "teams": {"created": 0, "updated": 0, "total": 0},
         "interviewers": {"created": 0, "updated": 0, "total": 0},
         "positions": {"created": 0, "updated": 0, "total": 0}
@@ -637,11 +638,13 @@ def _sync_embeddings_internal() -> Dict:
     
     # Get all existing embeddings from Weaviate
     vector_db = get_vector_db_client()
+    existing_candidate_ids = set()
     existing_team_ids = set()
     existing_interviewer_ids = set()
     existing_position_ids = set()
     
     for profile_type, id_set in [
+        ("Candidate", existing_candidate_ids),
         ("Team", existing_team_ids),
         ("Interviewer", existing_interviewer_ids),
         ("Position", existing_position_ids)
@@ -730,39 +733,123 @@ def _sync_embeddings_internal() -> Dict:
                 (company_id,)
             )
             results["positions"]["total"] = len(positions)
-        
-        for position_row in positions:
-            position = dict(position_row)
-            position_id = position['id']
             
-            # Check if embedding exists
-            if position_id not in existing_position_ids:
-                # Generate and store embedding
-                try:
-                    kg.add_position(position)
-                    results["positions"]["created"] += 1
-                    logger.info(f"Created embedding for position: {position_id}")
-                except Exception as e:
-                    logger.error(f"Failed to create embedding for position {position_id}: {e}")
-            else:
-                # Update embedding (in case data changed)
-                try:
-                    kg.update_position(position_id, position)
-                    results["positions"]["updated"] += 1
-                    logger.debug(f"Updated embedding for position: {position_id}")
-                except Exception as e:
-                    logger.error(f"Failed to update embedding for position {position_id}: {e}")
+            for position_row in positions:
+                position = dict(position_row)
+                position_id = position['id']
+                
+                # Check if embedding exists
+                if position_id not in existing_position_ids:
+                    # Generate and store embedding
+                    try:
+                        kg.add_position(position)
+                        results["positions"]["created"] += 1
+                        logger.info(f"Created embedding for position: {position_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to create embedding for position {position_id}: {e}")
+                else:
+                    # Update embedding (in case data changed)
+                    try:
+                        kg.update_position(position_id, position)
+                        results["positions"]["updated"] += 1
+                        logger.debug(f"Updated embedding for position: {position_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to update embedding for position {position_id}: {e}")
     except Exception as e:
         # Positions table might not exist yet or other error
         logger.debug(f"Positions table not available: {e}")
         results["positions"]["total"] = 0
     
+    # Sync Candidates
+    try:
+        # Check if candidates table exists first
+        table_exists = postgres.execute_query(
+            """
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                AND table_name = 'candidates'
+            )
+            """
+        )
+        if not table_exists or not table_exists[0].get('exists', False):
+            logger.debug("Candidates table does not exist, skipping candidate embeddings sync")
+            results["candidates"]["total"] = 0
+        else:
+            candidates = postgres.execute_query(
+                "SELECT * FROM candidates WHERE company_id = %s",
+                (company_id,)
+            )
+            results["candidates"]["total"] = len(candidates)
+            
+            for candidate_row in candidates:
+                candidate = dict(candidate_row)
+                candidate_id = candidate.get('id')
+                if not candidate_id:
+                    # Fallback to x_handle if id is not available
+                    candidate_id = candidate.get('x_handle')
+                if not candidate_id:
+                    logger.warning(f"Skipping candidate with no id or x_handle: {candidate}")
+                    continue
+                
+                # Check if embedding exists
+                if candidate_id not in existing_candidate_ids:
+                    # Generate and store embedding
+                    try:
+                        # Ensure JSONB fields are properly formatted
+                        import json
+                        for jsonb_field in ['skills', 'domains', 'experience', 'education', 'projects', 
+                                          'repos', 'papers', 'last_gathered_from', 'github_stats', 
+                                          'arxiv_stats', 'resume_parsed', 'screening_responses']:
+                            value = candidate.get(jsonb_field)
+                            if value is None:
+                                continue
+                            if isinstance(value, str):
+                                try:
+                                    candidate[jsonb_field] = json.loads(value)
+                                except:
+                                    candidate[jsonb_field] = [] if jsonb_field in ['skills', 'domains', 'experience', 'education', 'projects', 'repos', 'papers'] else {}
+                        
+                        kg.add_candidate(candidate)
+                        results["candidates"]["created"] += 1
+                        logger.info(f"Created embedding for candidate: {candidate_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to create embedding for candidate {candidate_id}: {e}")
+                else:
+                    # Update embedding (in case data changed)
+                    try:
+                        # Ensure JSONB fields are properly formatted
+                        import json
+                        for jsonb_field in ['skills', 'domains', 'experience', 'education', 'projects', 
+                                          'repos', 'papers', 'last_gathered_from', 'github_stats', 
+                                          'arxiv_stats', 'resume_parsed', 'screening_responses']:
+                            value = candidate.get(jsonb_field)
+                            if value is None:
+                                continue
+                            if isinstance(value, str):
+                                try:
+                                    candidate[jsonb_field] = json.loads(value)
+                                except:
+                                    candidate[jsonb_field] = [] if jsonb_field in ['skills', 'domains', 'experience', 'education', 'projects', 'repos', 'papers'] else {}
+                        
+                        kg.update_candidate(candidate_id, candidate)
+                        results["candidates"]["updated"] += 1
+                        logger.debug(f"Updated embedding for candidate: {candidate_id}")
+                    except Exception as e:
+                        logger.error(f"Failed to update embedding for candidate {candidate_id}: {e}")
+    except Exception as e:
+        # Candidates table might not exist yet or other error
+        logger.debug(f"Candidates table not available: {e}")
+        results["candidates"]["total"] = 0
+    
     total_created = (
+        results["candidates"]["created"] +
         results["teams"]["created"] +
         results["interviewers"]["created"] +
         results["positions"]["created"]
     )
     total_updated = (
+        results["candidates"]["updated"] +
         results["teams"]["updated"] +
         results["interviewers"]["updated"] +
         results["positions"]["updated"]
@@ -776,6 +863,7 @@ def _sync_embeddings_internal() -> Dict:
             "total_created": total_created,
             "total_updated": total_updated,
             "total_processed": (
+                results["candidates"]["total"] +
                 results["teams"]["total"] +
                 results["interviewers"]["total"] +
                 results["positions"]["total"]
@@ -872,15 +960,15 @@ async def create_weaviate_schema():
 @router.post("/embeddings/sync", response_model=Dict)
 async def sync_embeddings():
     """
-    Sync embeddings: Ensure all teams/interviewers/positions from PostgreSQL have embeddings in Weaviate.
+    Sync embeddings: Ensure all candidates/teams/interviewers/positions from PostgreSQL have embeddings in Weaviate.
     
     This endpoint:
-    1. Gets all teams/interviewers/positions from PostgreSQL
+    1. Gets all candidates/teams/interviewers/positions from PostgreSQL
     2. Checks which ones don't have embeddings in Weaviate
     3. Generates and stores missing embeddings
     
     Returns:
-        Dictionary with sync results (created, updated, total)
+        Dictionary with sync results (created, updated, total) for all profile types
     """
     try:
         return _sync_embeddings_internal()
@@ -972,7 +1060,7 @@ async def get_embeddings_for_graph():
                     "y": 1.0 / 3.0,
                     "z": 1.0 / 3.0
                 }
-            
+                    
             # Add 3D coordinates to all data items
             for i, data_item in enumerate(all_filtered_data):
                         data_item["position"] = {
@@ -981,10 +1069,10 @@ async def get_embeddings_for_graph():
                             "z": float(reduced_3d[i][2])
                         }
                         data_item["explained_variance"] = explained_variance
-
-            return {
-                "embeddings": all_data,
-                "total_points": sum(len(v) for v in all_data.values()),
+        
+        return {
+            "embeddings": all_data,
+            "total_points": sum(len(v) for v in all_data.values()),
             "company_id": company_id
         }
         
@@ -1038,7 +1126,9 @@ def get_similar_embeddings(profile_type: str, profile_id: str, top_k: int = 10, 
             
             for result_type, results in all_results.items():
                 for result in results:
-                    if result.get("metadata", {}).get("company_id") == company_id:
+                    # Check company_id at top level (from vector_db) or in metadata (fallback)
+                    result_company_id = result.get("company_id") or result.get("metadata", {}).get("company_id")
+                    if result_company_id == company_id:
                         formatted_results[result_type].append({
                             "profile_id": result.get("profile_id"),
                             "profile_type": result.get("profile_type", result_type.rstrip("s")),
@@ -1060,7 +1150,9 @@ def get_similar_embeddings(profile_type: str, profile_id: str, top_k: int = 10, 
             # Filter by company_id and format results
             filtered_results = []
             for result in similar_results:
-                if result.get("metadata", {}).get("company_id") == company_id:
+                # Check company_id at top level (from vector_db) or in metadata (fallback)
+                result_company_id = result.get("company_id") or result.get("metadata", {}).get("company_id")
+                if result_company_id == company_id:
                     filtered_results.append({
                         "profile_id": result.get("profile_id"),
                         "profile_type": profile_type.lower(),
@@ -2903,23 +2995,37 @@ def list_positions():
         # Convert to PositionResponse format
         result = []
         for position in positions:
+            # Handle None values - ensure lists are always lists, strings are always strings
+            must_haves = position.get('must_haves') or []
+            nice_to_haves = position.get('nice_to_haves') or []
+            collaboration = position.get('collaboration') or []
+            priority = position.get('priority') or 'medium'
+            
+            # Ensure lists are actually lists (not None)
+            if not isinstance(must_haves, list):
+                must_haves = []
+            if not isinstance(nice_to_haves, list):
+                nice_to_haves = []
+            if not isinstance(collaboration, list):
+                collaboration = []
+            
             result.append(PositionResponse(
                 id=position['id'],
                 company_id=position['company_id'],
                 title=position['title'],
                 team_id=position.get('team_id'),
                 description=position.get('description'),
-                requirements=position.get('requirements', []),
-                must_haves=position.get('must_haves', []),
-                nice_to_haves=position.get('nice_to_haves', []),
+                requirements=position.get('requirements') or [],
+                must_haves=must_haves,
+                nice_to_haves=nice_to_haves,
                 experience_level=position.get('experience_level'),
-                responsibilities=position.get('responsibilities', []),
-                tech_stack=position.get('tech_stack', []),
-                domains=position.get('domains', []),
+                responsibilities=position.get('responsibilities') or [],
+                tech_stack=position.get('tech_stack') or [],
+                domains=position.get('domains') or [],
                 team_context=position.get('team_context'),
                 reporting_to=position.get('reporting_to'),
-                collaboration=position.get('collaboration', []),
-                priority=position.get('priority', 'medium'),
+                collaboration=collaboration,
+                priority=priority,
                 status=position.get('status', 'open'),
                 created_at=position['created_at'],
                 updated_at=position['updated_at']
@@ -3568,9 +3674,28 @@ async def post_to_x(position_id: str, request: PostToXRequest):
                 (str(uuid.uuid4()), position_id, company_id, now, now)
             )
         
+        # Store the X post ID for tracking replies
+        x_post_id = result.get("data", {}).get("id")
+        if x_post_id:
+            import uuid
+            # Check if post already exists
+            existing_post = postgres.execute_one(
+                "SELECT id FROM position_x_posts WHERE x_post_id = %s",
+                (x_post_id,)
+            )
+            
+            if not existing_post:
+                postgres.execute_update(
+                    """
+                    INSERT INTO position_x_posts (id, position_id, company_id, x_post_id, post_text, posted_at, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (str(uuid.uuid4()), position_id, company_id, x_post_id, post_text, now, now, now)
+                )
+        
         return {
             "success": True,
-            "post_id": result.get("data", {}).get("id"),
+            "post_id": x_post_id,
             "post_text": post_text
         }
         
@@ -3648,6 +3773,1003 @@ def update_position_distribution(position_id: str, distribution: PositionDistrib
     except Exception as e:
         logger.error(f"Error updating position distribution: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error updating position distribution: {str(e)}")
+
+
+@router.get("/positions/{position_id}/interested-candidates", response_model=List[Dict])
+def get_interested_candidates(position_id: str):
+    """
+    Get list of candidates who commented "interested" on position X posts.
+    
+    Args:
+        position_id: Position ID
+    
+    Returns:
+        List of interested candidates with X handles and metadata
+    """
+    try:
+        postgres = get_postgres_client()
+        company_context = get_company_context()
+        company_id = company_context.get_company_id()
+        
+        # Verify position exists
+        position = postgres.execute_one(
+            "SELECT id FROM positions WHERE id = %s AND company_id = %s",
+            (position_id, company_id)
+        )
+        
+        if not position:
+            raise HTTPException(status_code=404, detail=f"Position {position_id} not found")
+        
+        # Get interested candidates - only one row per x_handle (most recent comment)
+        # Using DISTINCT ON to get the most recent comment per candidate
+        query = """
+            SELECT DISTINCT ON (ic.x_handle)
+                ic.id,
+                ic.x_handle,
+                ic.x_user_id,
+                ic.comment_text,
+                ic.comment_id,
+                ic.commented_at,
+                ic.created_at,
+                pxp.x_post_id,
+                pxp.post_text as post_text
+            FROM interested_candidates ic
+            JOIN position_x_posts pxp ON ic.x_post_id = pxp.x_post_id
+            WHERE ic.position_id = %s AND ic.company_id = %s
+            ORDER BY ic.x_handle, ic.commented_at DESC NULLS LAST
+        """
+        
+        candidates = postgres.execute_query(query, (position_id, company_id))
+        
+        # Format results
+        result = []
+        for candidate in candidates:
+            result.append({
+                "id": candidate["id"],
+                "x_handle": candidate["x_handle"],
+                "x_user_id": candidate.get("x_user_id"),
+                "comment_text": candidate.get("comment_text", ""),
+                "comment_id": candidate.get("comment_id"),
+                "commented_at": candidate.get("commented_at"),
+                "created_at": candidate.get("created_at"),
+                "x_post_id": candidate.get("x_post_id"),
+                "post_text": candidate.get("post_text")
+            })
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting interested candidates: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting interested candidates: {str(e)}")
+
+
+@router.get("/positions/{position_id}/x-posts", response_model=List[Dict])
+def get_position_x_posts(position_id: str):
+    """
+    Get all X posts for a position.
+    
+    Args:
+        position_id: Position ID
+    
+    Returns:
+        List of X posts with post ID, text, and metadata
+    """
+    try:
+        postgres = get_postgres_client()
+        company_context = get_company_context()
+        company_id = company_context.get_company_id()
+        
+        # Verify position exists
+        position = postgres.execute_one(
+            "SELECT id FROM positions WHERE id = %s AND company_id = %s",
+            (position_id, company_id)
+        )
+        
+        if not position:
+            raise HTTPException(status_code=404, detail=f"Position {position_id} not found")
+        
+        # Get all X posts for this position
+        query = """
+            SELECT 
+                id,
+                x_post_id,
+                post_text,
+                posted_at,
+                created_at,
+                updated_at
+            FROM position_x_posts
+            WHERE position_id = %s AND company_id = %s
+            ORDER BY posted_at DESC, created_at DESC
+        """
+        
+        posts = postgres.execute_query(query, (position_id, company_id))
+        
+        # Format results
+        result = []
+        for post in posts:
+            result.append({
+                "id": post["id"],
+                "x_post_id": post["x_post_id"],
+                "post_text": post.get("post_text", ""),
+                "posted_at": post.get("posted_at"),
+                "created_at": post.get("created_at"),
+                "updated_at": post.get("updated_at")
+            })
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting X posts: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting X posts: {str(e)}")
+
+
+@router.post("/positions/{position_id}/sync-interested", response_model=Dict)
+async def sync_interested_candidates(position_id: str):
+    """
+    Sync interested candidates from X API by checking replies to position posts.
+    
+    This endpoint:
+    1. Finds all X posts for this position
+    2. Fetches replies from X API
+    3. Filters for replies containing "interested" (case-insensitive)
+    4. Stores new interested candidates
+    
+    Args:
+        position_id: Position ID
+    
+    Returns:
+        Sync result with count of new candidates found
+    """
+    try:
+        postgres = get_postgres_client()
+        company_context = get_company_context()
+        company_id = company_context.get_company_id()
+        
+        # Verify position exists
+        position = postgres.execute_one(
+            "SELECT id FROM positions WHERE id = %s AND company_id = %s",
+            (position_id, company_id)
+        )
+        
+        if not position:
+            raise HTTPException(status_code=404, detail=f"Position {position_id} not found")
+        
+        # Get all X posts for this position
+        x_posts = postgres.execute_query(
+            "SELECT x_post_id FROM position_x_posts WHERE position_id = %s AND company_id = %s",
+            (position_id, company_id)
+        )
+        
+        if not x_posts:
+            return {
+                "success": True,
+                "new_candidates": 0,
+                "message": "No X posts found for this position"
+            }
+        
+        # Fetch replies from X API
+        from backend.integrations.x_api import XAPIClient
+        x_client = XAPIClient()
+        
+        new_candidates_count = 0
+        from datetime import datetime
+        import uuid
+        import asyncio
+        
+        # Process posts with rate limiting to avoid 429 errors
+        for idx, post_row in enumerate(x_posts):
+            x_post_id = post_row["x_post_id"]
+            
+            # Add delay between requests to avoid rate limiting (except for first request)
+            if idx > 0:
+                await asyncio.sleep(1)  # 1 second delay between posts to respect rate limits
+            
+            # Get replies with error handling
+            try:
+                replies = await x_client.get_post_replies(x_post_id, max_results=100)
+            except Exception as e:
+                error_msg = str(e)
+                # Check if it's a rate limit error (429)
+                if "429" in error_msg or "Too Many Requests" in error_msg:
+                    logger.warning(f"Rate limited (429) for post {x_post_id}. Skipping this post.")
+                    replies = []  # Skip this post, continue with others
+                else:
+                    logger.error(f"Error getting replies for post {x_post_id}: {e}")
+                    replies = []  # Skip this post on other errors too
+            
+            for reply in replies:
+                reply_text = reply.get("text", "").lower()
+                author_username = reply.get("author_username", "")
+                author_id = reply.get("author_id", "")
+                
+                # Check if reply contains "interested" anywhere in the text (case-insensitive)
+                if "interested" in reply_text and author_username:
+                    # Parse comment timestamp
+                    commented_at = reply.get("created_at")
+                    if commented_at:
+                        try:
+                            from dateutil import parser
+                            commented_at = parser.parse(commented_at)
+                        except:
+                            commented_at = datetime.now()
+                    else:
+                        commented_at = datetime.now()
+                    
+                    # Check if we already have this candidate for this position
+                    existing = postgres.execute_one(
+                        """
+                        SELECT id FROM interested_candidates 
+                        WHERE position_id = %s AND x_handle = %s
+                        """,
+                        (position_id, author_username)
+                    )
+                    
+                    if not existing:
+                        # Insert new interested candidate
+                        postgres.execute_update(
+                            """
+                            INSERT INTO interested_candidates 
+                            (id, position_id, company_id, x_post_id, x_handle, x_user_id, comment_text, comment_id, commented_at, created_at, updated_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """,
+                            (
+                                str(uuid.uuid4()),
+                                position_id,
+                                company_id,
+                                x_post_id,
+                                author_username,
+                                author_id,
+                                reply.get("text", ""),
+                                reply.get("id"),
+                                commented_at,
+                                datetime.now(),
+                                datetime.now()
+                            )
+                        )
+                        
+                        # Create pipeline entry and trigger DM screening
+                        try:
+                            from backend.orchestration.dm_screening_service import DMScreeningService
+                            
+                            # Get position title
+                            position_data = postgres.execute_one(
+                                "SELECT id, title FROM positions WHERE id = %s AND company_id = %s",
+                                (position_id, company_id)
+                            )
+                            position_title = position_data.get("title", "Position") if position_data else "Position"
+                            
+                            # Process interested candidate (creates pipeline entry and sends DM)
+                            from backend.integrations.x_dm_service import XDMService
+                            try:
+                                dm_service = XDMService()
+                            except Exception as dm_init_error:
+                                logger.error(f"Failed to initialize XDMService: {dm_init_error}")
+                                dm_service = None
+                            
+                            dm_screening = DMScreeningService(dm_service=dm_service)
+                            await dm_screening.process_interested_candidate(
+                                x_handle=author_username,
+                                x_user_id=author_id,
+                                position_id=position_id,
+                                position_title=position_title,
+                                x_post_id=x_post_id,
+                                comment_text=reply.get("text", "")
+                            )
+                            logger.info(f"Created pipeline entry for {author_username} in position {position_id}")
+                        except Exception as e:
+                            logger.warning(f"Failed to create pipeline entry for {author_username}: {e}")
+                            # Continue even if pipeline creation fails
+                        
+                        new_candidates_count += 1
+                    else:
+                        # Update existing record with latest comment (if this comment is newer)
+                        existing_record = postgres.execute_one(
+                            """
+                            SELECT commented_at FROM interested_candidates 
+                            WHERE position_id = %s AND x_handle = %s
+                            """,
+                            (position_id, author_username)
+                        )
+                        
+                        # Update if this comment is newer or if we want to refresh the data
+                        should_update = True
+                        if existing_record and existing_record.get("commented_at"):
+                            try:
+                                existing_date = existing_record["commented_at"]
+                                if isinstance(existing_date, str):
+                                    from dateutil import parser
+                                    existing_date = parser.parse(existing_date)
+                                if commented_at < existing_date:
+                                    should_update = False
+                            except:
+                                pass
+                        
+                        if should_update:
+                            postgres.execute_update(
+                                """
+                                UPDATE interested_candidates 
+                                SET x_post_id = %s, x_user_id = %s, comment_text = %s, comment_id = %s, 
+                                    commented_at = %s, updated_at = %s
+                                WHERE position_id = %s AND x_handle = %s
+                                """,
+                                (
+                                    x_post_id,
+                                    author_id,
+                                    reply.get("text", ""),
+                                    reply.get("id"),
+                                    commented_at,
+                                    datetime.now(),
+                                    position_id,
+                                    author_username
+                                )
+                            )
+        
+        return {
+            "success": True,
+            "new_candidates": new_candidates_count,
+            "message": f"Found {new_candidates_count} new interested candidates"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error syncing interested candidates: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error syncing interested candidates: {str(e)}")
+
+
+@router.post("/candidates/sync-all", response_model=Dict)
+async def sync_all_candidates():
+    """
+    Sync interested candidates from X API for all positions that have X posts.
+    
+    This endpoint:
+    1. Finds all positions with X posts
+    2. For each position, fetches replies from X API
+    3. Filters for replies containing "interested" (case-insensitive)
+    4. Stores new interested candidates
+    
+    Returns:
+        Sync result with total count of new candidates found across all positions
+    """
+    try:
+        postgres = get_postgres_client()
+        company_context = get_company_context()
+        company_id = company_context.get_company_id()
+        
+        # Get all positions that have X posts
+        positions_with_posts = postgres.execute_query(
+            """
+            SELECT DISTINCT p.id as position_id
+            FROM positions p
+            JOIN position_x_posts pxp ON p.id = pxp.position_id
+            WHERE p.company_id = %s
+            """,
+            (company_id,)
+        )
+        
+        if not positions_with_posts:
+            return {
+                "success": True,
+                "total_new_candidates": 0,
+                "positions_synced": 0,
+                "message": "No positions with X posts found"
+            }
+        
+        # Fetch replies from X API
+        from backend.integrations.x_api import XAPIClient
+        x_client = XAPIClient()
+        
+        total_new_candidates = 0
+        from datetime import datetime
+        import uuid
+        
+        for position_row in positions_with_posts:
+            position_id = position_row["position_id"]
+            
+            # Get all X posts for this position
+            x_posts = postgres.execute_query(
+                "SELECT x_post_id FROM position_x_posts WHERE position_id = %s AND company_id = %s",
+                (position_id, company_id)
+            )
+            
+            for post_row in x_posts:
+                x_post_id = post_row["x_post_id"]
+                
+                try:
+                    # Fetch replies from X API
+                    replies = await x_client.get_post_replies(x_post_id, max_results=100)
+                    
+                    for reply in replies:
+                        reply_text = reply.get("text", "").lower()
+                        
+                        # Check if reply contains "interested" (case-insensitive)
+                        if "interested" in reply_text:
+                            author_username = reply.get("author_username", "")
+                            author_id = reply.get("author_id", "")
+                            
+                            if not author_username:
+                                continue
+                            
+                            # Parse timestamp
+                            from dateutil import parser
+                            commented_at = None
+                            if reply.get("created_at"):
+                                try:
+                                    commented_at = parser.parse(reply["created_at"])
+                                except:
+                                    commented_at = datetime.now()
+                            else:
+                                commented_at = datetime.now()
+                            
+                            # Check if we already have this candidate for this position
+                            existing = postgres.execute_one(
+                                """
+                                SELECT id FROM interested_candidates 
+                                WHERE position_id = %s AND x_handle = %s
+                                """,
+                                (position_id, author_username)
+                            )
+                            
+                            if existing:
+                                # Update existing record with the latest comment
+                                postgres.execute_update(
+                                    """
+                                    UPDATE interested_candidates
+                                    SET x_post_id = %s, comment_text = %s, comment_id = %s, commented_at = %s, updated_at = %s
+                                    WHERE id = %s
+                                    """,
+                                    (x_post_id, reply.get("text", ""), reply.get("id"), commented_at, datetime.now(), existing["id"])
+                                )
+                            else:
+                                # Insert new interested candidate
+                                postgres.execute_update(
+                                    """
+                                    INSERT INTO interested_candidates 
+                                    (id, position_id, company_id, x_post_id, x_handle, x_user_id, comment_text, comment_id, commented_at, created_at, updated_at)
+                                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                    """,
+                                    (
+                                        str(uuid.uuid4()),
+                                        position_id,
+                                        company_id,
+                                        x_post_id,
+                                        author_username,
+                                        author_id,
+                                        reply.get("text", ""),
+                                        reply.get("id"),
+                                        commented_at,
+                                        datetime.now(),
+                                        datetime.now()
+                                    )
+                                )
+                                
+                                # Create pipeline entry and trigger DM screening
+                                try:
+                                    from backend.orchestration.dm_screening_service import DMScreeningService
+                                    
+                                    # Get position title
+                                    position_data = postgres.execute_one(
+                                        "SELECT id, title FROM positions WHERE id = %s AND company_id = %s",
+                                        (position_id, company_id)
+                                    )
+                                    position_title = position_data.get("title", "Position") if position_data else "Position"
+                                    
+                                    # Process interested candidate (creates pipeline entry and sends DM)
+                                    dm_screening = DMScreeningService()
+                                    await dm_screening.process_interested_candidate(
+                                        x_handle=author_username,
+                                        x_user_id=author_id,
+                                        position_id=position_id,
+                                        position_title=position_title,
+                                        x_post_id=x_post_id,
+                                        comment_text=reply.get("text", "")
+                                    )
+                                    logger.info(f"Created pipeline entry for {author_username} in position {position_id}")
+                                except Exception as e:
+                                    logger.warning(f"Failed to create pipeline entry for {author_username}: {e}")
+                                    # Continue even if pipeline creation fails
+                                
+                                total_new_candidates += 1
+                
+                except Exception as e:
+                    logger.warning(f"Error syncing replies for post {x_post_id}: {e}")
+                    continue
+        
+        return {
+            "success": True,
+            "total_new_candidates": total_new_candidates,
+            "positions_synced": len(positions_with_posts),
+            "message": f"Synced {len(positions_with_posts)} positions, found {total_new_candidates} new candidates"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error syncing all candidates: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error syncing all candidates: {str(e)}")
+
+
+@router.get("/candidates", response_model=List[Dict])
+def get_all_candidates():
+    """
+    Get list of all candidates from the database.
+    
+    Returns candidates from:
+    1. All candidates in the candidates table (from data folder)
+    2. Plus any interested candidates from X (who commented "interested")
+    
+    Returns:
+        List of candidates with X handles and metadata (position count, latest comment date)
+    """
+    try:
+        postgres = get_postgres_client()
+        company_context = get_company_context()
+        company_id = company_context.get_company_id()
+        
+        # Get all candidates from candidates table
+        candidates_query = """
+            SELECT 
+                c.id,
+                c.x_handle,
+                c.x_user_id,
+                c.name,
+                COUNT(DISTINCT ps.position_id) as position_count,
+                MAX(ps.entered_at) as latest_stage_at,
+                MIN(c.created_at) as first_seen_at
+            FROM candidates c
+            LEFT JOIN pipeline_stages ps ON ps.candidate_id = c.id AND ps.company_id = c.company_id
+            WHERE c.company_id = %s
+            GROUP BY c.id, c.x_handle, c.x_user_id, c.name, c.created_at
+            ORDER BY latest_stage_at DESC NULLS LAST, c.created_at DESC
+        """
+        
+        db_candidates = postgres.execute_query(candidates_query, (company_id,))
+        
+        # Also get interested candidates (for those who commented on X but aren't in candidates table yet)
+        interested_query = """
+            SELECT 
+                ic.x_handle,
+                ic.x_user_id,
+                COUNT(DISTINCT ic.position_id) as position_count,
+                MAX(ic.commented_at) as latest_comment_at,
+                MIN(ic.created_at) as first_seen_at
+            FROM interested_candidates ic
+            WHERE ic.company_id = %s
+              AND NOT EXISTS (
+                  SELECT 1 FROM candidates c 
+                  WHERE c.x_handle = ic.x_handle AND c.company_id = ic.company_id
+              )
+            GROUP BY ic.x_handle, ic.x_user_id
+        """
+        
+        interested_candidates = postgres.execute_query(interested_query, (company_id,))
+        
+        # Build result map to avoid duplicates
+        candidate_map = {}
+        
+        # Add candidates from candidates table
+        for candidate in db_candidates:
+            x_handle = candidate.get("x_handle")
+            if x_handle:
+                candidate_map[x_handle] = {
+                    "x_handle": x_handle,
+                    "x_user_id": candidate.get("x_user_id"),
+                    "position_count": candidate.get("position_count", 0),
+                    "latest_comment_at": candidate.get("latest_stage_at").isoformat() if candidate.get("latest_stage_at") else None,
+                    "first_seen_at": candidate.get("first_seen_at").isoformat() if candidate.get("first_seen_at") else None,
+                    "name": candidate.get("name"),
+                    "id": candidate.get("id")
+                }
+        
+        # Add interested candidates (only if not already in map)
+        for candidate in interested_candidates:
+            x_handle = candidate.get("x_handle")
+            if x_handle and x_handle not in candidate_map:
+                candidate_map[x_handle] = {
+                    "x_handle": x_handle,
+                    "x_user_id": candidate.get("x_user_id"),
+                    "position_count": candidate.get("position_count", 0),
+                    "latest_comment_at": candidate.get("latest_comment_at").isoformat() if candidate.get("latest_comment_at") else None,
+                    "first_seen_at": candidate.get("first_seen_at").isoformat() if candidate.get("first_seen_at") else None
+                }
+        
+        # Convert to list and sort
+        result = list(candidate_map.values())
+        result.sort(
+            key=lambda x: (
+                x.get("latest_comment_at") or x.get("first_seen_at") or "",
+            ),
+            reverse=True
+        )
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error getting all candidates: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting all candidates: {str(e)}")
+
+
+@router.get("/candidates/{candidate_id}/embedding", response_model=Dict)
+def get_candidate_embedding(candidate_id: str):
+    """
+    Get embedding vector for a candidate.
+    
+    Args:
+        candidate_id: Candidate ID (can be x_handle or candidate.id)
+    
+    Returns:
+        Embedding data with vector, dimension, and metadata
+    """
+    try:
+        vector_db = get_vector_db_client()
+        company_context = get_company_context()
+        company_id = company_context.get_company_id()
+        
+        embedding_data = vector_db.get_embedding("Candidate", candidate_id)
+        if not embedding_data:
+            raise HTTPException(status_code=404, detail=f"Embedding not found for candidate {candidate_id}")
+        
+        # Verify company_id matches
+        if embedding_data.get("company_id") != company_id:
+            raise HTTPException(status_code=404, detail=f"Embedding not found for candidate {candidate_id}")
+        
+        embedding_vector = embedding_data.get("embedding", [])
+        
+        # Calculate statistics
+        import numpy as np
+        if embedding_vector:
+            arr = np.array(embedding_vector)
+            stats = {
+                "min": float(np.min(arr)),
+                "max": float(np.max(arr)),
+                "mean": float(np.mean(arr)),
+                "std": float(np.std(arr)),
+                "norm": float(np.linalg.norm(arr))
+            }
+        else:
+            stats = {}
+        
+        return {
+            "candidate_id": candidate_id,
+            "profile_type": "candidate",
+            "embedding": embedding_vector,
+            "embedding_dimension": len(embedding_vector) if embedding_vector else 768,
+            "statistics": stats,
+            "metadata": embedding_data.get("metadata", {})
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting candidate embedding: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting candidate embedding: {str(e)}")
+
+
+@router.post("/candidates/{candidate_id}/generate-embedding", response_model=Dict)
+def generate_candidate_embedding(candidate_id: str):
+    """
+    Generate and store embedding for a candidate that doesn't have one yet.
+    
+    Args:
+        candidate_id: Candidate ID (can be x_handle or candidate.id)
+    
+    Returns:
+        Success message
+    """
+    try:
+        postgres = get_postgres_client()
+        company_context = get_company_context()
+        company_id = company_context.get_company_id()
+        
+        # Get candidate from PostgreSQL
+        candidate = postgres.execute_one(
+            "SELECT * FROM candidates WHERE (id = %s OR x_handle = %s) AND company_id = %s",
+            (candidate_id, candidate_id, company_id)
+        )
+        if not candidate:
+            raise HTTPException(status_code=404, detail=f"Candidate {candidate_id} not found")
+        
+        # Generate and store embedding
+        kg = get_knowledge_graph()
+        candidate_dict = dict(candidate)
+        
+        # Ensure JSONB fields are properly formatted
+        import json
+        for jsonb_field in ['skills', 'domains', 'experience', 'education', 'projects', 
+                          'repos', 'papers', 'last_gathered_from', 'github_stats', 
+                          'arxiv_stats', 'resume_parsed', 'screening_responses']:
+            value = candidate_dict.get(jsonb_field)
+            if value is None:
+                continue
+            if isinstance(value, str):
+                try:
+                    candidate_dict[jsonb_field] = json.loads(value)
+                except:
+                    candidate_dict[jsonb_field] = [] if jsonb_field in ['skills', 'domains', 'experience', 'education', 'projects', 'repos', 'papers'] else {}
+        
+        kg.add_candidate(candidate_dict)
+        
+        return {
+            "message": f"Embedding generated for candidate {candidate_id}",
+            "candidate_id": candidate_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating candidate embedding: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error generating candidate embedding: {str(e)}")
+
+
+@router.get("/candidates/by-handle/{x_handle}", response_model=Dict)
+def get_candidate_by_handle(x_handle: str):
+    """
+    Get full candidate profile by X handle or candidate ID.
+    
+    Args:
+        x_handle: X username/handle (without @) OR candidate ID (e.g., candidate_0322)
+    
+    Returns:
+        Complete candidate profile with all data (skills, repos, papers, etc.)
+    """
+    try:
+        postgres = get_postgres_client()
+        company_context = get_company_context()
+        company_id = company_context.get_company_id()
+        
+        # Try to get candidate by x_handle first
+        candidate = postgres.execute_one(
+            """
+            SELECT * FROM candidates
+            WHERE x_handle = %s AND company_id = %s
+            LIMIT 1
+            """,
+            (x_handle, company_id)
+        )
+        
+        # If not found by handle, try by candidate ID (e.g., candidate_0322)
+        if not candidate:
+            candidate = postgres.execute_one(
+                """
+                SELECT * FROM candidates
+                WHERE id = %s AND company_id = %s
+                LIMIT 1
+                """,
+                (x_handle, company_id)
+            )
+        
+        if not candidate:
+            raise HTTPException(status_code=404, detail=f"Candidate with handle/ID {x_handle} not found")
+        
+        # Convert to dict (PostgreSQL returns as dict already)
+        return dict(candidate)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting candidate by handle: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting candidate: {str(e)}")
+
+
+@router.post("/candidates/{x_handle}/manual-screen", response_model=Dict)
+async def manual_screen_candidate(x_handle: str):
+    """
+    Manually trigger screening for a candidate.
+    
+    This will:
+    1. Check if candidate exists, create if not
+    2. Analyze profile gaps
+    3. Send DM with screening questions
+    4. Enter dm_screening stage
+    
+    Args:
+        x_handle: X username/handle (without @)
+    
+    Returns:
+        Result with status and message
+    """
+    try:
+        from backend.orchestration.dm_screening_service import DMScreeningService
+        
+        postgres = get_postgres_client()
+        company_context = get_company_context()
+        company_id = company_context.get_company_id()
+        
+        # Get candidate
+        candidate = postgres.execute_one(
+            """
+            SELECT id, x_handle, x_user_id FROM candidates
+            WHERE x_handle = %s AND company_id = %s
+            LIMIT 1
+            """,
+            (x_handle, company_id)
+        )
+        
+        if not candidate:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Candidate with handle {x_handle} not found. They must comment 'interested' on a position first."
+            )
+        
+        candidate_id = candidate['id']
+        x_user_id = candidate.get('x_user_id')
+        
+        # If x_user_id is missing, fetch it from X API
+        if not x_user_id:
+            logger.info(f"Missing x_user_id for {x_handle}, fetching from X API...")
+            try:
+                from backend.integrations.x_api import XAPIClient
+                x_client = XAPIClient()
+                profile = await x_client.get_profile(x_handle)
+                
+                if not profile or 'id' not in profile:
+                    raise HTTPException(
+                        status_code=404,
+                        detail=f"Could not fetch X profile for {x_handle}. User may not exist or be private."
+                    )
+                
+                x_user_id = profile['id']
+                
+                # Update candidate record with x_user_id
+                postgres.execute_update(
+                    """
+                    UPDATE candidates
+                    SET x_user_id = %s, updated_at = NOW()
+                    WHERE id = %s AND company_id = %s
+                    """,
+                    (x_user_id, candidate_id, company_id)
+                )
+                
+                logger.info(f"Fetched and saved x_user_id {x_user_id} for {x_handle}")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error fetching x_user_id from X API: {e}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Failed to fetch x_user_id from X API: {str(e)}"
+                )
+        
+        # Get all positions this candidate is interested in
+        positions = postgres.execute_query(
+            """
+            SELECT DISTINCT position_id, p.title
+            FROM interested_candidates ic
+            JOIN positions p ON ic.position_id = p.id
+            WHERE ic.x_handle = %s AND ic.company_id = %s
+            """,
+            (x_handle, company_id)
+        )
+        
+        if not positions:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Candidate {x_handle} is not interested in any positions yet."
+            )
+        
+        # Process screening for each position
+        from backend.integrations.x_dm_service import XDMService
+        dm_service = XDMService()
+        dm_screening = DMScreeningService(dm_service=dm_service)
+        results = []
+        
+        for position in positions:
+            position_id = position['position_id']
+            position_title = position.get('title', 'Position')
+            
+            try:
+                # Get the most recent X post for this position
+                x_post = postgres.execute_one(
+                    """
+                    SELECT x_post_id FROM position_x_posts
+                    WHERE position_id = %s AND company_id = %s
+                    ORDER BY posted_at DESC
+                    LIMIT 1
+                    """,
+                    (position_id, company_id)
+                )
+                
+                x_post_id = x_post['x_post_id'] if x_post else None
+                
+                await dm_screening.process_interested_candidate(
+                    x_handle=x_handle,
+                    x_user_id=x_user_id,
+                    position_id=position_id,
+                    position_title=position_title,
+                    x_post_id=x_post_id or '',
+                    comment_text="Manual screening triggered"
+                )
+                
+                results.append({
+                    "position_id": position_id,
+                    "position_title": position_title,
+                    "status": "success"
+                })
+            except Exception as e:
+                logger.warning(f"Error screening candidate for position {position_id}: {e}")
+                results.append({
+                    "position_id": position_id,
+                    "position_title": position_title,
+                    "status": "error",
+                    "error": str(e)
+                })
+        
+        return {
+            "success": True,
+            "candidate_id": candidate_id,
+            "x_handle": x_handle,
+            "positions_processed": len(results),
+            "results": results
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error manually screening candidate: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error screening candidate: {str(e)}")
+
+
+@router.get("/candidates/{x_handle}/posts", response_model=List[Dict])
+def get_candidate_posts(x_handle: str):
+    """
+    Get all posts that a candidate (X handle) has commented "interested" on.
+    
+    Args:
+        x_handle: X username/handle (without @)
+    
+    Returns:
+        List of posts with position info, post text, comment text, and timestamps
+    """
+    try:
+        postgres = get_postgres_client()
+        company_context = get_company_context()
+        company_id = company_context.get_company_id()
+        
+        # Get all posts this candidate has commented on
+        query = """
+            SELECT 
+                ic.id,
+                ic.position_id,
+                ic.x_post_id,
+                ic.comment_text,
+                ic.comment_id,
+                ic.commented_at,
+                pxp.post_text,
+                pxp.posted_at,
+                p.title as position_title,
+                p.company_id
+            FROM interested_candidates ic
+            JOIN position_x_posts pxp ON ic.x_post_id = pxp.x_post_id
+            JOIN positions p ON ic.position_id = p.id
+            WHERE ic.x_handle = %s AND ic.company_id = %s
+            ORDER BY ic.commented_at DESC NULLS LAST
+        """
+        
+        posts = postgres.execute_query(query, (x_handle, company_id))
+        
+        # Format results
+        result = []
+        for post in posts:
+            result.append({
+                "id": post["id"],
+                "position_id": post["position_id"],
+                "position_title": post["position_title"],
+                "x_post_id": post["x_post_id"],
+                "post_text": post["post_text"],
+                "post_url": f"https://x.com/i/web/status/{post['x_post_id']}",
+                "comment_text": post["comment_text"],
+                "comment_id": post["comment_id"],
+                "commented_at": post["commented_at"].isoformat() if post["commented_at"] else None,
+                "posted_at": post["posted_at"].isoformat() if post["posted_at"] else None
+            })
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error getting candidate posts: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting candidate posts: {str(e)}")
 
 
 @router.get("/positions/{position_id}/embedding", response_model=Dict)
@@ -3930,4 +5052,589 @@ Otherwise, just respond with a natural follow-up question."""
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# ========== Pipeline Endpoints ==========
+
+@router.get("/positions/{position_id}/pipeline", response_model=List[Dict])
+async def get_position_pipeline(position_id: str):
+    """
+    Get all candidates in a position's pipeline.
+    
+    Args:
+        position_id: Position ID
+    
+    Returns:
+        List of candidates with their current pipeline stage
+    """
+    try:
+        from backend.orchestration.pipeline_tracker import PipelineTracker
+        
+        pipeline = PipelineTracker()
+        candidates = pipeline.get_candidates_in_pipeline(position_id)
+        
+        return candidates
+        
+    except Exception as e:
+        logger.error(f"Error getting position pipeline: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting position pipeline: {str(e)}")
+
+
+@router.get("/positions/{position_id}/pipeline/{stage}", response_model=List[Dict])
+async def get_position_pipeline_by_stage(position_id: str, stage: str):
+    """
+    Get candidates in a position's pipeline at a specific stage.
+    
+    Args:
+        position_id: Position ID
+        stage: Pipeline stage name
+    
+    Returns:
+        List of candidates at the specified stage
+    """
+    try:
+        from backend.orchestration.pipeline_tracker import PipelineTracker
+        
+        pipeline = PipelineTracker()
+        candidates = pipeline.get_candidates_in_pipeline(position_id, stage=stage)
+        
+        return candidates
+        
+    except Exception as e:
+        logger.error(f"Error getting position pipeline by stage: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting position pipeline by stage: {str(e)}")
+
+
+@router.get("/candidates/{candidate_id}/pipeline", response_model=List[Dict])
+async def get_candidate_pipeline(candidate_id: str):
+    """
+    Get all positions a candidate is in pipeline for.
+    
+    Args:
+        candidate_id: Candidate ID
+    
+    Returns:
+        List of positions with their current pipeline stage
+    """
+    try:
+        from backend.orchestration.pipeline_tracker import PipelineTracker
+        
+        pipeline = PipelineTracker()
+        positions = pipeline.get_positions_for_candidate(candidate_id)
+        
+        return positions
+        
+    except Exception as e:
+        logger.error(f"Error getting candidate pipeline: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting candidate pipeline: {str(e)}")
+
+
+@router.get("/candidates/{candidate_id}/pipeline/{position_id}/history", response_model=List[Dict])
+async def get_pipeline_history(candidate_id: str, position_id: str):
+    """
+    Get full pipeline history for a candidate-position pair.
+    
+    Args:
+        candidate_id: Candidate ID
+        position_id: Position ID
+    
+    Returns:
+        List of stage transitions in chronological order
+    """
+    try:
+        from backend.orchestration.pipeline_tracker import PipelineTracker
+        
+        pipeline = PipelineTracker()
+        history = pipeline.get_pipeline_history(candidate_id, position_id)
+        
+        return history
+        
+    except Exception as e:
+        logger.error(f"Error getting pipeline history: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting pipeline history: {str(e)}")
+
+
+@router.get("/pipeline/stage/{stage}", response_model=List[Dict])
+async def get_candidates_by_stage(stage: str):
+    """
+    Get all candidates at a specific stage across all positions.
+    
+    Args:
+        stage: Pipeline stage name
+    
+    Returns:
+        List of candidates with position and stage info
+    """
+    try:
+        from backend.orchestration.pipeline_tracker import PipelineTracker
+        
+        pipeline = PipelineTracker()
+        candidates = pipeline.get_candidates_by_stage(stage)
+        
+        return candidates
+        
+    except Exception as e:
+        logger.error(f"Error getting candidates by stage: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error getting candidates by stage: {str(e)}")
+
+
+@router.put("/candidates/{candidate_id}/pipeline/{position_id}/stage", response_model=Dict)
+async def update_pipeline_stage(
+    candidate_id: str,
+    position_id: str,
+    stage: str,
+    metadata: Optional[Dict[str, Any]] = None
+):
+    """
+    Update pipeline stage for a candidate-position pair.
+    
+    Args:
+        candidate_id: Candidate ID
+        position_id: Position ID
+        stage: New stage name
+        metadata: Optional stage-specific metadata
+    
+    Returns:
+        Updated pipeline stage info
+    """
+    try:
+        from backend.orchestration.pipeline_tracker import PipelineTracker
+        
+        pipeline = PipelineTracker()
+        stage_id = pipeline.transition_stage(
+            candidate_id=candidate_id,
+            position_id=position_id,
+            new_stage=stage,
+            metadata=metadata or {}
+        )
+        
+        current_stage = pipeline.get_current_stage(candidate_id, position_id)
+        
+        return {
+            "success": True,
+            "stage_id": stage_id,
+            "stage": current_stage
+        }
+        
+    except Exception as e:
+        logger.error(f"Error updating pipeline stage: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error updating pipeline stage: {str(e)}")
+
+
+@router.post("/candidates/{candidate_id}/pipeline/{position_id}/process-dm", response_model=Dict)
+async def process_dm_response(
+    candidate_id: str,
+    position_id: str,
+    dm_message: str
+):
+    """
+    Process a DM response from a candidate.
+    
+    Parses the response, extracts information, calculates screening score,
+    and updates pipeline stages.
+    
+    Args:
+        candidate_id: Candidate ID
+        position_id: Position ID
+        dm_message: The DM message text from candidate
+    
+    Returns:
+        Processing result with extracted fields, screening score, and new stage
+    """
+    try:
+        from backend.orchestration.dm_screening_service import DMScreeningService
+        
+        screening_service = DMScreeningService()
+        result = await screening_service.process_dm_response(
+            candidate_id=candidate_id,
+            position_id=position_id,
+            dm_message_text=dm_message
+        )
+        
+        return {
+            "success": True,
+            **result
+        }
+        
+    except Exception as e:
+        logger.error(f"Error processing DM response: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error processing DM response: {str(e)}")
+
+
+# ============================================================================
+# DEMO ENDPOINTS - Manual Triggers and Demo Features
+# ============================================================================
+
+@router.post("/demo/phone-screen-and-match", response_model=Dict)
+async def phone_screen_and_match(
+    candidate_id: str = Query(..., description="Candidate ID"),
+    position_id: str = Query(..., description="Position ID")
+):
+    """
+    MANUAL TRIGGER: Conduct phone screen, analyze transcript, and match to team/interviewer.
+    
+    Full flow:
+    1. Conduct phone screen via Vapi
+    2. Analyze transcript with Grok
+    3. Determine pass/fail
+    4. If pass: Match to team and interviewer
+    5. Update pipeline
+    
+    Args:
+        candidate_id: Candidate ID (query parameter)
+        position_id: Position ID (query parameter)
+    
+    Returns:
+        Complete result with phone screen, decision, and matches
+    """
+    if not candidate_id or not position_id:
+        raise HTTPException(status_code=400, detail="candidate_id and position_id are required")
+    
+    try:
+        from backend.interviews.phone_screen_interviewer import PhoneScreenInterviewer
+        from backend.matching.team_matcher import TeamPersonMatcher
+        from backend.orchestration.pipeline_tracker import PipelineTracker
+        from backend.integrations.grok_api import GrokAPIClient
+        
+        interviewer = get_phone_screen_interviewer()
+        matcher = TeamPersonMatcher()
+        pipeline = PipelineTracker()
+        grok = GrokAPIClient()
+        
+        # Step 1: Conduct phone screen (this stores results internally)
+        logger.info(f"🎤 Starting phone screen for {candidate_id} -> {position_id}")
+        phone_result = await interviewer.conduct_phone_screen(
+            candidate_id=candidate_id,
+            position_id=position_id
+        )
+        logger.info(f"✅ Phone screen completed and results stored for {candidate_id}")
+        
+        transcript = phone_result.get("conversation", "")
+        extracted_info = phone_result.get("extracted_info", {})
+        decision = phone_result.get("decision", {})
+        
+        # Step 2: Analyze transcript with Grok for pass/fail decision
+        logger.info("📊 Analyzing transcript for final decision...")
+        import json
+        analysis_prompt = f"""Analyze this phone screen transcript and determine if the candidate should PASS or FAIL.
+
+TRANSCRIPT:
+{transcript}
+
+EXTRACTED INFO:
+{json.dumps(extracted_info, indent=2)}
+
+DECISION ENGINE RESULT:
+{json.dumps(decision, indent=2)}
+
+Return JSON with:
+{{
+    "should_pass": true/false,
+    "confidence": 0.0-1.0,
+    "reasoning": "Detailed explanation",
+    "key_factors": ["factor1", "factor2", ...]
+}}"""
+        
+        analysis_response = await grok._make_chat_request(analysis_prompt)
+        analysis_content = analysis_response.get("choices", [{}])[0].get("message", {}).get("content", "{}")
+        
+        # Parse analysis
+        if "```json" in analysis_content:
+            analysis_content = analysis_content.split("```json")[1].split("```")[0].strip()
+        elif "```" in analysis_content:
+            analysis_content = analysis_content.split("```")[1].split("```")[0].strip()
+        
+        try:
+            analysis = json.loads(analysis_content)
+        except:
+            analysis = {"should_pass": decision.get("should_pass", False), "confidence": 0.5, "reasoning": "Could not parse analysis"}
+        
+        should_pass = analysis.get("should_pass", False)
+        
+        # Step 3: Update pipeline
+        if should_pass:
+            pipeline.transition_stage(
+                candidate_id=candidate_id,
+                position_id=position_id,
+                new_stage="phone_screen_passed",
+                metadata={
+                    "phone_screen_result": phone_result,
+                    "analysis": analysis,
+                    "transcript": transcript
+                }
+            )
+            
+            # Step 4: Match to team and interviewer
+            logger.info("🎯 Matching to team and interviewer...")
+            team_match = matcher.match_to_team(candidate_id)
+            interviewer_match = matcher.match_to_person(
+                candidate_id=candidate_id,
+                team_id=team_match.get("team_id")
+            )
+            
+            # Update pipeline with matches
+            pipeline.transition_stage(
+                candidate_id=candidate_id,
+                position_id=position_id,
+                new_stage="matched_to_team",
+                metadata={
+                    "team_match": team_match,
+                    "interviewer_match": interviewer_match
+                }
+            )
+            
+            return {
+                "success": True,
+                "phone_screen": phone_result,
+                "analysis": analysis,
+                "decision": "PASS",
+                "team_match": team_match,
+                "interviewer_match": interviewer_match,
+                "pipeline_stage": "matched_to_team"
+            }
+        else:
+            pipeline.transition_stage(
+                candidate_id=candidate_id,
+                position_id=position_id,
+                new_stage="phone_screen_failed",
+                metadata={
+                    "phone_screen_result": phone_result,
+                    "analysis": analysis,
+                    "transcript": transcript
+                }
+            )
+            
+            return {
+                "success": True,
+                "phone_screen": phone_result,
+                "analysis": analysis,
+                "decision": "FAIL",
+                "pipeline_stage": "phone_screen_failed"
+            }
+        
+    except Exception as e:
+        logger.error(f"Error in phone screen and match: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@router.get("/demo/candidates/{candidate_id}/elon-score", response_model=Dict)
+async def get_elon_score(candidate_id: str, position_id: Optional[str] = None):
+    """
+    Get ELON score (exceptional talent score) for a candidate.
+    
+    Args:
+        candidate_id: Candidate ID
+        position_id: Optional position ID (for position-specific score)
+    
+    Returns:
+        ELON score and breakdown
+    """
+    try:
+        from backend.matching.exceptional_talent_finder import ExceptionalTalentFinder
+        
+        finder = ExceptionalTalentFinder()
+        score_result = finder.score_candidate(candidate_id, position_id=position_id)
+        
+        return {
+            "candidate_id": candidate_id,
+            "position_id": position_id,
+            "elon_score": score_result.get("combined_score", score_result.get("exceptional_score", 0.0)),
+            "exceptional_score": score_result.get("exceptional_score", 0.0),
+            "position_fit": score_result.get("position_fit", 1.0) if position_id else None,
+            "signal_breakdown": score_result.get("signal_breakdown", {}),
+            "evidence": score_result.get("evidence", {}),
+            "why_exceptional": score_result.get("why_exceptional", "")
+        }
+    except Exception as e:
+        logger.error(f"Error getting ELON score: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@router.get("/demo/candidates/elon-scores", response_model=Dict)
+async def get_all_elon_scores(position_id: Optional[str] = None, top_k: int = 20):
+    """
+    Get ELON scores for all candidates (or top candidates for a position).
+    
+    Args:
+        position_id: Optional position ID (for position-specific ranking)
+        top_k: Number of top candidates to return
+    
+    Returns:
+        List of candidates with ELON scores
+    """
+    try:
+        from backend.matching.exceptional_talent_finder import ExceptionalTalentFinder
+        from backend.database.knowledge_graph import KnowledgeGraph
+        
+        finder = ExceptionalTalentFinder()
+        kg = KnowledgeGraph()
+        
+        if position_id:
+            # Position-specific exceptional talent
+            exceptional = finder.find_exceptional_talent(position_id, top_k=top_k)
+            return {
+                "position_id": position_id,
+                "candidates": exceptional,
+                "count": len(exceptional)
+            }
+        else:
+            # All candidates with scores
+            all_candidates = kg.get_all_candidates()
+            scored = []
+            
+            for candidate in all_candidates[:100]:  # Limit to 100 for performance
+                score_result = finder.score_candidate(candidate.get('id'))
+                scored.append({
+                    "candidate_id": candidate.get('id'),
+                    "name": candidate.get('name'),
+                    "elon_score": score_result.get("exceptional_score", 0.0),
+                    "signal_breakdown": score_result.get("signal_breakdown", {})
+                })
+            
+            scored.sort(key=lambda x: x["elon_score"], reverse=True)
+            return {
+                "candidates": scored[:top_k],
+                "count": len(scored[:top_k])
+            }
+    except Exception as e:
+        logger.error(f"Error getting ELON scores: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@router.post("/demo/learning-demo", response_model=Dict)
+async def run_learning_demo(request: Dict = None):
+    """
+    MANUAL TRIGGER: Run learning demonstration (warm-start vs cold-start).
+    
+    Args:
+        request: Dict with num_events (optional, default 100)
+    
+    Returns:
+        Learning curve data and metrics
+    """
+    try:
+        from backend.orchestration.learning_demo import LearningDemo
+        
+        if request is None:
+            request = {}
+        num_events = request.get('num_events', 100)
+        
+        demo = LearningDemo()
+        result = demo.run_learning_simulation(
+            candidates=None,  # Will use all candidates
+            positions=None,  # Will use all positions
+            num_feedback_events=num_events
+        )
+        
+        return {
+            "success": True,
+            "warm_start": result.get("warm_start", {}),
+            "cold_start": result.get("cold_start", {}),
+            "improvement": result.get("improvement", {}),
+            "metrics": result.get("metrics", {})
+        }
+    except Exception as e:
+        logger.error(f"Error running learning demo: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@router.post("/demo/candidates/search", response_model=Dict)
+async def search_candidates(
+    query: Optional[str] = None,
+    cluster: Optional[str] = None,
+    required_skills: Optional[List[str]] = None,
+    excluded_skills: Optional[List[str]] = None,
+    min_arxiv_papers: Optional[int] = None,
+    min_github_stars: Optional[int] = None,
+    top_k: int = 50
+):
+    """
+    MANUAL TRIGGER: Search candidates using query engine.
+    
+    Args:
+        query: Semantic similarity query
+        cluster: Ability cluster name
+        required_skills: Required skills (AND)
+        excluded_skills: Excluded skills (NOT)
+        min_arxiv_papers: Minimum arXiv papers
+        min_github_stars: Minimum GitHub stars
+        top_k: Number of results
+    
+    Returns:
+        Matching candidates
+    """
+    try:
+        from backend.database.query_engine import QueryEngine
+        
+        engine = QueryEngine()
+        
+        filters = {}
+        if cluster:
+            filters["cluster"] = cluster
+        if required_skills:
+            filters["skills"] = {"required": required_skills}
+        if excluded_skills:
+            if "skills" not in filters:
+                filters["skills"] = {}
+            filters["skills"]["excluded"] = excluded_skills
+        if min_arxiv_papers:
+            filters["arxiv_papers"] = {"min": min_arxiv_papers}
+        if min_github_stars:
+            filters["github_stars"] = {"min": min_github_stars}
+        
+        results = engine.query_candidates(
+            filters=filters,
+            similarity_query=query,
+            top_k=top_k
+        )
+        
+        return {
+            "success": True,
+            "candidates": results,
+            "count": len(results)
+        }
+    except Exception as e:
+        logger.error(f"Error searching candidates: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
+
+
+@router.post("/demo/exceptional-talent", response_model=Dict)
+async def find_exceptional_talent_demo(
+    request: Dict
+):
+    """
+    MANUAL TRIGGER: Find exceptional talent (the "next Elon") for a position.
+    
+    Args:
+        request: Dict with position_id (required), min_score (optional), top_k (optional)
+    
+    Returns:
+        Exceptional candidates
+    """
+    try:
+        from backend.matching.exceptional_talent_finder import ExceptionalTalentFinder
+        
+        position_id = request.get('position_id')
+        if not position_id:
+            raise HTTPException(status_code=400, detail="position_id is required")
+        
+        min_score = request.get('min_score', 0.90)
+        top_k = request.get('top_k', 20)
+        
+        finder = ExceptionalTalentFinder()
+        results = finder.find_exceptional_talent(
+            position_id=position_id,
+            min_score=min_score,
+            top_k=top_k
+        )
+        
+        return {
+            "success": True,
+            "position_id": position_id,
+            "candidates": results,
+            "count": len(results)
+        }
+    except Exception as e:
+        logger.error(f"Error finding exceptional talent: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)}")
 

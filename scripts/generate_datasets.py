@@ -11,11 +11,11 @@ Usage:
     python scripts/generate_datasets.py --count 100 50 100 80  # Small test dataset
     python scripts/generate_datasets.py  # Full 1,000x scale (default: 15000 8000 15000 12000)
 
-Default counts (1,000x scale):
-    - Candidates: 15,000
-    - Teams: 8,000
-    - Interviewers: 15,000
-    - Positions: 12,000
+Default counts (demo scale):
+    - Candidates: 1,000
+    - Teams: 10
+    - Interviewers: 6
+    - Positions: 40
 """
 
 import json
@@ -36,10 +36,10 @@ from backend.datasets import (
 
 
 def save_datasets(
-    candidate_count: int = 15000,
-    team_count: int = 8000,
-    interviewer_count: int = 15000,
-    position_count: int = 12000,
+    candidate_count: int = 1000,
+    team_count: int = 10,
+    interviewer_count: int = 6,
+    position_count: int = 40,
     output_dir: Path = Path("data")
 ):
     """
@@ -135,8 +135,8 @@ def main():
         nargs=4,
         type=int,
         metavar=('CANDIDATES', 'TEAMS', 'INTERVIEWERS', 'POSITIONS'),
-        default=[15000, 8000, 15000, 12000],
-        help='Number of profiles to generate for each type (default: 15000 8000 15000 12000 - 1,000x scale)'
+        default=[1000, 10, 6, 40],
+        help='Number of profiles to generate for each type (default: 1000 10 6 40 - demo scale)'
     )
     parser.add_argument(
         '--output-dir',

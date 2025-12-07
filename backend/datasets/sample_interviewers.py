@@ -69,9 +69,13 @@ def generate_interviewer_profile(interviewer_id: int, team_id: Optional[int] = N
         'General ML': random.uniform(0.2, 0.6)
     }
     
+    # Generate phone number (required by database schema)
+    phone_number = f'+1{random.randint(2000000000, 9999999999)}'
+    
     return {
         'id': f'interviewer_{interviewer_id:04d}',
         'name': f'Interviewer {interviewer_id}',
+        'phone_number': phone_number,
         'email': f'interviewer_{interviewer_id:04d}@example.com',
         'team_id': f'team_{team_id:04d}' if team_id is not None else f'team_{random.randint(0, 100):04d}',
         'expertise': expertise,
@@ -94,7 +98,7 @@ def generate_interviewer_profile(interviewer_id: int, team_id: Optional[int] = N
     }
 
 
-def generate_interviewers(count: int = 1500, teams_count: int = 800) -> Iterator[Dict[str, Any]]:
+def generate_interviewers(count: int = 6, teams_count: int = 10) -> Iterator[Dict[str, Any]]:
     """
     Generate interviewer profiles using a generator.
     

@@ -15,6 +15,12 @@ Generates 500+ datapoints per candidate matching CANDIDATE_SCHEMA.md:
 - Analytics (50+ datapoints)
 - Metadata (10+ datapoints)
 
+REQUIREMENTS:
+- Every candidate MUST have a unique x_handle (X/Twitter handle)
+- x_handle is a required unique identifier for all candidates
+- Format: 'dev_{profile_id:04d}' (e.g., 'dev_0001', 'dev_0002')
+- This ensures candidates can be uniquely identified and tracked via X API
+
 Why this scale:
 - Tests embedding generation performance (1,000+ profiles)
 - Tests vector DB storage/retrieval at scale
@@ -147,9 +153,10 @@ def _generate_x_posts(count: int, domain: str) -> List[Dict[str, Any]]:
 
 def _calculate_data_completeness(profile: Dict[str, Any]) -> float:
     """Calculate data completeness score (0.0-1.0)."""
-    required_fields = ['id', 'name', 'phone_number', 'skills', 'domains', 'expertise_level', 'experience_years']
+    # x_handle is now a required field (unique identifier)
+    required_fields = ['id', 'name', 'phone_number', 'skills', 'domains', 'expertise_level', 'experience_years', 'x_handle']
     optional_fields = [
-        'github_handle', 'x_handle', 'linkedin_url', 'arxiv_author_id',
+        'github_handle', 'linkedin_url', 'arxiv_author_id',
         'resume_text', 'repos', 'papers', 'posts'
     ]
     
@@ -207,8 +214,10 @@ def generate_candidate_profile(profile_id: int) -> Dict[str, Any]:
     has_linkedin_url = random.random() > 0.2  # Only URL, no data gathering
     has_arxiv = random.random() > 0.5
     
+    # REQUIREMENT: Every candidate MUST have a unique x_handle
+    # x_handle is a required unique identifier for tracking via X API
     github_handle = f'dev_{profile_id:04d}' if has_github else None
-    x_handle = f'dev_{profile_id:04d}' if has_x else None
+    x_handle = f'dev_{profile_id:04d}'  # Always present, unique per candidate
     
     # Generate GitHub data
     num_repos = random.randint(5, 50) if has_github else 0
@@ -391,7 +400,7 @@ def generate_candidate_profile(profile_id: int) -> Dict[str, Any]:
         'email': f'{first_name.lower()}.{last_name.lower()}@example.com' if random.random() > 0.3 else None,
         'github_handle': github_handle,
         'github_user_id': str(random.randint(100000, 999999)) if has_github else None,
-        'x_handle': x_handle,
+        'x_handle': x_handle,  # REQUIRED: Unique identifier for all candidates
         'x_user_id': str(random.randint(1000000000000000000, 9999999999999999999)) if has_x else None,
         'linkedin_url': f'https://linkedin.com/in/{first_name.lower()}-{last_name.lower()}-{profile_id:04d}' if has_linkedin_url else None,
         'arxiv_author_id': arxiv_author_id,

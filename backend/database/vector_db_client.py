@@ -112,7 +112,7 @@ class VectorDBClient:
         Internal method to store/update embedding in Weaviate.
         
         Uses deterministic UUIDs based on profile_id to prevent duplicates.
-        If a record with the same profile_id exists, it will be updated.
+        If a record with the same profile_id exists, it will be skipped (no update).
         
         Args:
             class_name: Weaviate collection name (Candidate, Team, Interviewer, Position)
@@ -124,6 +124,25 @@ class VectorDBClient:
             True if successful, False otherwise
         """
         try:
+            # Generate deterministic UUID based on profile_id and class_name
+            # This ensures the same profile_id always gets the same UUID, preventing duplicates
+            # Format: "{class_name}:{profile_id}" to ensure uniqueness across classes
+            unique_identifier = f"{class_name}:{profile_id}"
+            obj_uuid = generate_uuid5(unique_identifier)
+            
+            # Get collection
+            collection = self.client.collections.get(class_name)
+            
+            # Check if object already exists in Weaviate
+            try:
+                existing = collection.query.fetch_object_by_id(uuid=obj_uuid)
+                if existing:
+                    logger.debug(f"Skipping {class_name} profile {profile_id} - already exists in Weaviate (UUID: {obj_uuid})")
+                    return True  # Already exists, consider it successful
+            except Exception:
+                # Object doesn't exist, continue to insert
+                pass
+            
             # Convert embedding to list
             vector = embedding.tolist() if isinstance(embedding, np.ndarray) else embedding
             
@@ -140,50 +159,36 @@ class VectorDBClient:
             # Extract company_id from metadata (for multi-tenancy filtering)
             company_id = metadata.get('company_id', 'xai')  # Default to 'xai' for demo
             
-            # Generate deterministic UUID based on profile_id and class_name
-            # This ensures the same profile_id always gets the same UUID, preventing duplicates
-            # Format: "{class_name}:{profile_id}" to ensure uniqueness across classes
-            unique_identifier = f"{class_name}:{profile_id}"
-            obj_uuid = generate_uuid5(unique_identifier)
-            
-            # Get collection
-            collection = self.client.collections.get(class_name)
-            
-            # Use replace for upsert behavior: replaces if exists, inserts if not
-            # This prevents duplicates by using deterministic UUIDs
+            # Insert new object (we already checked it doesn't exist)
             try:
-                collection.data.replace(
-                    uuid=obj_uuid,
-                properties={
-                    "profile_id": profile_id,
+                collection.data.insert(
+                    properties={
+                        "profile_id": profile_id,
                         "company_id": company_id,
-                    "metadata": metadata_json
-                },
-                vector=vector
-            )
-                logger.debug(f"Upserted {class_name} profile: {profile_id} (UUID: {obj_uuid})")
-            except Exception as replace_error:
-                # If replace fails (object doesn't exist), try insert
-                # This handles the edge case where replace doesn't work for new objects
+                        "metadata": metadata_json
+                    },
+                    vector=vector,
+                    uuid=obj_uuid
+                )
+                logger.debug(f"Inserted {class_name} profile: {profile_id} (UUID: {obj_uuid})")
+                return True
+            except Exception as insert_error:
+                # If insert fails, it might be a race condition (another process inserted it)
+                # Check again if it exists now
                 try:
-                    collection.data.insert(
-                        properties={
-                            "profile_id": profile_id,
-                            "company_id": company_id,
-                            "metadata": metadata_json
-                        },
-                        vector=vector,
-                        uuid=obj_uuid
-                    )
-                    logger.debug(f"Inserted {class_name} profile: {profile_id} (UUID: {obj_uuid})")
-                except Exception as insert_error:
-                    # If both fail, log error and return False
-                    logger.error(f"Both replace and insert failed for {class_name} profile {profile_id}: {insert_error}")
-                    raise
+                    existing = collection.query.fetch_object_by_id(uuid=obj_uuid)
+                    if existing:
+                        logger.debug(f"{class_name} profile {profile_id} was inserted by another process, skipping")
+                        return True
+                except Exception:
+                    pass
+                
+                # If it still doesn't exist, log the error
+                logger.warning(f"Failed to insert {class_name} profile {profile_id}: {insert_error}")
+                return False
             
-            return True
         except Exception as e:
-            logger.error(f"Failed to store {class_name} profile {profile_id}: {e}")
+            logger.warning(f"Failed to store {class_name} profile {profile_id}: {e}")
             return False
     
     def search_similar_candidates(self, query_embedding: np.ndarray, top_k: int = 50) -> List[Dict[str, Any]]:
@@ -239,12 +244,14 @@ class VectorDBClient:
             parsed_results = []
             for obj in results.objects:
                 metadata = json.loads(obj.properties.get("metadata", "{}"))
+                company_id = obj.properties.get("company_id")
                 distance = obj.metadata.distance if obj.metadata.distance else 0.0
                 # Convert distance to similarity (1 - distance for cosine)
                 similarity = 1.0 - distance if distance <= 1.0 else 0.0
                 
                 parsed_results.append({
                     "profile_id": obj.properties.get("profile_id"),
+                    "company_id": company_id,
                     "metadata": metadata,
                     "similarity": similarity,
                     "distance": distance

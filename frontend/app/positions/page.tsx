@@ -6,12 +6,14 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Plus, Edit, Briefcase, Trash2, Brain, Sparkles, Search } from 'lucide-react';
+import { Plus, Edit, Briefcase, Trash2, Brain, Sparkles, Search, Users, GitBranch } from 'lucide-react';
 import { Input } from '@/components/ui/input';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { CreatePositionDialog } from '@/components/positions/CreatePositionDialog';
 import { EditPositionDialog } from '@/components/positions/EditPositionDialog';
 import { PositionEmbeddingDialog } from '@/components/positions/EmbeddingDialog';
+import { InterestedCandidatesDialog } from '@/components/positions/InterestedCandidatesDialog';
+import { ExceptionalTalentButton } from '@/components/demo/ExceptionalTalentButton';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -36,12 +38,14 @@ function PositionRow({
   onDelete, 
   onEdit,
   onViewEmbedding,
+  onViewInterestedCandidates,
   generateEmbeddingMutation 
 }: { 
   position: Position;
   onDelete: (position: Position) => void;
   onEdit: (position: Position) => void;
   onViewEmbedding: (position: Position) => void;
+  onViewInterestedCandidates: (position: Position) => void;
   generateEmbeddingMutation: any;
 }) {
   // Check if embedding exists for this position
@@ -140,6 +144,36 @@ function PositionRow({
               </Tooltip>
             </TooltipProvider>
           )}
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => onViewInterestedCandidates(position)}
+                  title="View interested candidates"
+                >
+                  <Users className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>View interested candidates</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => window.location.href = `/positions/${position.id}/pipeline`}
+                  title="View pipeline"
+                >
+                  <GitBranch className="h-4 w-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>View pipeline</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
           <Button
             variant="ghost"
             size="sm"
@@ -169,6 +203,7 @@ export default function PositionsPage() {
   const [editPosition, setEditPosition] = useState<Position | null>(null);
   const [deletePosition, setDeletePosition] = useState<Position | null>(null);
   const [embeddingPosition, setEmbeddingPosition] = useState<Position | null>(null);
+  const [interestedCandidatesPosition, setInterestedCandidatesPosition] = useState<Position | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
   const { data: positions, isLoading, error } = useQuery({
@@ -252,10 +287,13 @@ export default function PositionsPage() {
             Manage job positions and requirements
           </p>
         </div>
-        <Button onClick={() => setCreateOpen(true)}>
-          <Plus className="mr-2 h-4 w-4" />
-          Create Position
-        </Button>
+        <div className="flex items-center gap-2">
+          <ExceptionalTalentButton />
+          <Button onClick={() => setCreateOpen(true)}>
+            <Plus className="mr-2 h-4 w-4" />
+            Create Position
+          </Button>
+        </div>
       </div>
 
       {/* Positions Table */}
@@ -311,6 +349,7 @@ export default function PositionsPage() {
                       onDelete={setDeletePosition}
                       onEdit={setEditPosition}
                       onViewEmbedding={setEmbeddingPosition}
+                      onViewInterestedCandidates={setInterestedCandidatesPosition}
                       generateEmbeddingMutation={generateEmbeddingMutation}
                     />
                   ))}
@@ -342,6 +381,15 @@ export default function PositionsPage() {
           position={embeddingPosition}
           open={!!embeddingPosition}
           onOpenChange={(open) => !open && setEmbeddingPosition(null)}
+        />
+      )}
+
+      {/* Interested Candidates Dialog */}
+      {interestedCandidatesPosition && (
+        <InterestedCandidatesDialog
+          position={interestedCandidatesPosition}
+          open={!!interestedCandidatesPosition}
+          onOpenChange={(open) => !open && setInterestedCandidatesPosition(null)}
         />
       )}
 

@@ -189,16 +189,61 @@ class VapiAPIClient:
         """
         title = position.get('title', 'position')
         company = position.get('company', 'the company')
-        must_haves = position.get('must_haves', [])
-        experience_level = position.get('experience_level', '')
-        domains = position.get('domains', [])
-        skills = position.get('required_skills', [])
+        # Ensure all fields are lists/strings, not None (PostgreSQL may return None or JSON strings)
+        import json
+        must_haves = position.get('must_haves') or []
+        if not isinstance(must_haves, list):
+            if isinstance(must_haves, str):
+                try:
+                    must_haves = json.loads(must_haves)
+                except:
+                    must_haves = []
+            else:
+                must_haves = []
+        experience_level = position.get('experience_level') or ''
+        domains = position.get('domains') or []
+        if not isinstance(domains, list):
+            if isinstance(domains, str):
+                try:
+                    domains = json.loads(domains)
+                except:
+                    domains = []
+            else:
+                domains = []
+        skills = position.get('required_skills') or []
+        if not isinstance(skills, list):
+            if isinstance(skills, str):
+                try:
+                    skills = json.loads(skills)
+                except:
+                    skills = []
+            else:
+                skills = []
         
         # Get comprehensive candidate info for hyper-personalization
         candidate_name = candidate.get('name', 'the candidate') if candidate else 'the candidate'
+        # Ensure candidate_skills is always a list (PostgreSQL may return None or JSON string)
         candidate_skills = candidate.get('skills', []) if candidate else []
+        if not isinstance(candidate_skills, list):
+            if isinstance(candidate_skills, str):
+                import json
+                try:
+                    candidate_skills = json.loads(candidate_skills)
+                except:
+                    candidate_skills = []
+            else:
+                candidate_skills = []
         candidate_experience = candidate.get('experience_years', 0) if candidate else 0
         candidate_domains = candidate.get('domains', []) if candidate else []
+        if not isinstance(candidate_domains, list):
+            if isinstance(candidate_domains, str):
+                import json
+                try:
+                    candidate_domains = json.loads(candidate_domains)
+                except:
+                    candidate_domains = []
+            else:
+                candidate_domains = []
         
         # Get arXiv research for deep technical questions
         papers = candidate.get('papers', []) if candidate else []
@@ -344,7 +389,7 @@ INTERVIEW STRATEGY - HYPER-TECHNICAL AND PERSONALIZED:
 
 3. POSITION-SPECIFIC TECHNICAL QUESTIONS:
    - "For this {title} role, what technical challenges do you anticipate?"
-   - "How would your experience with {', '.join(candidate_skills[:3] or ['your background'])} apply to {', '.join(must_haves[:3] or ['our requirements'])}?"
+   - "How would your experience with {', '.join((candidate_skills[:3] if candidate_skills else ['your background']))} apply to {', '.join((must_haves[:3] if must_haves else ['our requirements']))}?"
    - "What technical problems at {company} are you most excited to solve?"
 
 4. DEPTH PROBING (Follow up on EVERY technical answer):

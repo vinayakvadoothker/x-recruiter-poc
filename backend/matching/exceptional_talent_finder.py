@@ -44,6 +44,8 @@ import math
 from typing import Dict, List, Any, Optional
 import numpy as np
 from backend.database.knowledge_graph import KnowledgeGraph
+from backend.database.postgres_client import PostgresClient
+from backend.orchestration.company_context import get_company_context
 from backend.embeddings import RecruitingKnowledgeGraphEmbedder
 
 logger = logging.getLogger(__name__)
@@ -76,6 +78,8 @@ class ExceptionalTalentFinder:
         """
         self.kg = knowledge_graph or KnowledgeGraph()
         self.embedder = embedder or RecruitingKnowledgeGraphEmbedder()
+        self.postgres = PostgresClient()
+        self.company_context = get_company_context()
         
         # EXTREMELY STRICT thresholds - only 0.0001% pass (1 in 1,000,000)
         # These are ELON-LEVEL thresholds - truly exceptional
@@ -127,13 +131,41 @@ class ExceptionalTalentFinder:
         """
         logger.info(f"Finding exceptional talent for position {position_id} (min_score={min_score}, top_k={top_k})")
         
-        # Get position
+        # Get position - try Knowledge Graph first, then PostgreSQL
         position = self.kg.get_position(position_id)
         if not position:
-            logger.error(f"Position {position_id} not found")
+            logger.info(f"Position {position_id} not found in Knowledge Graph, checking PostgreSQL...")
+            company_id = self.company_context.get_company_id()
+            position = self.postgres.execute_one(
+                """
+                SELECT * FROM positions
+                WHERE id = %s AND company_id = %s
+                LIMIT 1
+                """,
+                (position_id, company_id)
+            )
+            if position:
+                logger.info(f"Found position {position_id} in PostgreSQL")
+        
+        if not position:
+            logger.error(f"Position {position_id} not found in Knowledge Graph or PostgreSQL")
             return []
         
+        # Get all candidates - try Knowledge Graph first, then PostgreSQL
         all_candidates = self.kg.get_all_candidates()
+        if not all_candidates or len(all_candidates) == 0:
+            logger.info("No candidates found in Knowledge Graph, checking PostgreSQL...")
+            company_id = self.company_context.get_company_id()
+            db_candidates = self.postgres.execute_query(
+                """
+                SELECT * FROM candidates
+                WHERE company_id = %s
+                """,
+                (company_id,)
+            )
+            if db_candidates:
+                logger.info(f"Found {len(db_candidates)} candidates in PostgreSQL")
+                all_candidates = db_candidates
         scored_candidates = []
         
         for candidate in all_candidates:
@@ -173,7 +205,22 @@ class ExceptionalTalentFinder:
             Dictionary with exceptional_score, position_fit (if position_id provided),
             combined_score, signal_breakdown, and evidence
         """
+        # Get candidate - try Knowledge Graph first, then PostgreSQL
         candidate = self.kg.get_candidate(candidate_id)
+        if not candidate:
+            logger.debug(f"Candidate {candidate_id} not found in Knowledge Graph, checking PostgreSQL...")
+            company_id = self.company_context.get_company_id()
+            candidate = self.postgres.execute_one(
+                """
+                SELECT * FROM candidates
+                WHERE id = %s AND company_id = %s
+                LIMIT 1
+                """,
+                (candidate_id, company_id)
+            )
+            if candidate:
+                logger.debug(f"Found candidate {candidate_id} in PostgreSQL")
+        
         if not candidate:
             return {
                 'exceptional_score': 0.0,
@@ -232,7 +279,18 @@ class ExceptionalTalentFinder:
         combined_score = exceptional_score
         
         if position_id:
+            # Get position - try Knowledge Graph first, then PostgreSQL
             position = self.kg.get_position(position_id)
+            if not position:
+                company_id = self.company_context.get_company_id()
+                position = self.postgres.execute_one(
+                    """
+                    SELECT * FROM positions
+                    WHERE id = %s AND company_id = %s
+                    LIMIT 1
+                    """,
+                    (position_id, company_id)
+                )
             if position:
                 position_fit_result = self._calculate_position_fit(candidate, position)
                 position_fit = position_fit_result['fit_score']

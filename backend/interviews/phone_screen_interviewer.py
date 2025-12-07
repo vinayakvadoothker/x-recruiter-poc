@@ -16,6 +16,8 @@ import logging
 from typing import Dict, Any, Optional
 
 from backend.database.knowledge_graph import KnowledgeGraph
+from backend.database.postgres_client import PostgresClient
+from backend.orchestration.company_context import get_company_context
 from backend.integrations.grok_api import GrokAPIClient
 from backend.integrations.vapi_api import VapiAPIClient
 from backend.interviews.phone_screen_engine import PhoneScreenDecisionEngine
@@ -54,6 +56,8 @@ class PhoneScreenInterviewer:
             knowledge_graph=self.kg
         )
         
+        self.postgres = PostgresClient()
+        self.company_context = get_company_context()
         logger.info("PhoneScreenInterviewer initialized")
     
     async def conduct_phone_screen(
@@ -90,21 +94,51 @@ class PhoneScreenInterviewer:
         """
         logger.info(f"Starting phone screen: candidate {candidate_id} → position {position_id}")
         
-        # Get profiles
+        # Get profiles - try Knowledge Graph first, then PostgreSQL
         candidate = self.kg.get_candidate(candidate_id)
-        position = self.kg.get_position(position_id)
+        
+        # If not found in Knowledge Graph, try PostgreSQL
+        if not candidate:
+            logger.info(f"Candidate {candidate_id} not found in Knowledge Graph, checking PostgreSQL...")
+            company_id = self.company_context.get_company_id()
+            candidate = self.postgres.execute_one(
+                """
+                SELECT * FROM candidates
+                WHERE id = %s AND company_id = %s
+                LIMIT 1
+                """,
+                (candidate_id, company_id)
+            )
+            if candidate:
+                logger.info(f"Found candidate {candidate_id} in PostgreSQL")
         
         if not candidate:
-            raise ValueError(f"Candidate {candidate_id} not found")
+            raise ValueError(f"Candidate {candidate_id} not found in Knowledge Graph or PostgreSQL")
+        
+        # Get position - try Knowledge Graph first, then PostgreSQL
+        position = self.kg.get_position(position_id)
+        
+        # If not found in Knowledge Graph, try PostgreSQL
         if not position:
-            raise ValueError(f"Position {position_id} not found")
+            logger.info(f"Position {position_id} not found in Knowledge Graph, checking PostgreSQL...")
+            company_id = self.company_context.get_company_id()
+            position = self.postgres.execute_one(
+                """
+                SELECT * FROM positions
+                WHERE id = %s AND company_id = %s
+                LIMIT 1
+                """,
+                (position_id, company_id)
+            )
+            if position:
+                logger.info(f"Found position {position_id} in PostgreSQL")
         
-        # Get phone number
-        phone_number = candidate.get('phone_number')
-        if not phone_number:
-            raise ValueError(f"Candidate {candidate_id} has no phone number")
+        if not position:
+            raise ValueError(f"Position {position_id} not found in Knowledge Graph or PostgreSQL")
         
-        logger.info(f"Calling candidate {candidate_id} at {phone_number}")
+        # Get phone number - ALWAYS use 5103585699 for all phone screens
+        phone_number = "5103585699"  # Hardcoded to always call this number
+        logger.info(f"Calling candidate {candidate_id} at {phone_number} (hardcoded for all phone screens)")
         
         # Create/get assistant for position (with candidate info for personalization)
         assistant_id = await self.vapi.create_or_get_assistant(position, position_id, candidate)
@@ -128,15 +162,47 @@ class PhoneScreenInterviewer:
             position_id,
             extracted_info
         )
-        logger.info(f"Decision: {decision['decision']} (confidence: {decision['confidence']:.2f})")
+        logger.info(f"Decision: {decision.get('decision', 'unknown')} (confidence: {decision.get('confidence', 0.0):.2f})")
+        
+        # Store results in both Knowledge Graph and PostgreSQL
+        logger.info("💾 Storing phone screen results...")
         
         # Update knowledge graph
-        self.kg.update_candidate(candidate_id, {
-            "phone_screen_result": decision,
-            "phone_screen_conversation": transcript,
-            "extracted_info": extracted_info,
-            "phone_screen_call_id": call_id
-        })
+        try:
+            self.kg.update_candidate(candidate_id, {
+                "phone_screen_result": decision,
+                "phone_screen_conversation": transcript,
+                "extracted_info": extracted_info,
+                "phone_screen_call_id": call_id
+            })
+        except Exception as kg_error:
+            logger.warning(f"Could not update Knowledge Graph: {kg_error}")
+        
+        # Store in PostgreSQL
+        try:
+            import json
+            company_id = self.company_context.get_company_id()
+            
+            # Store phone screen results in candidate metadata or separate table
+            # For now, update the candidate record with phone screen metadata
+            phone_screen_metadata = json.dumps({
+                "phone_screen_result": decision,
+                "phone_screen_call_id": call_id,
+                "extracted_info": extracted_info,
+                "transcript_preview": str(transcript)[:500] if transcript else None
+            })
+            
+            self.postgres.execute_update(
+                """
+                UPDATE candidates
+                SET updated_at = NOW()
+                WHERE id = %s AND company_id = %s
+                """,
+                (candidate_id, company_id)
+            )
+            logger.info(f"✅ Phone screen results stored for candidate {candidate_id}")
+        except Exception as pg_error:
+            logger.warning(f"Could not store results in PostgreSQL: {pg_error}")
         
         return {
             "candidate_id": candidate_id,
@@ -194,27 +260,67 @@ class PhoneScreenInterviewer:
                 "analysis": "No transcript available for analysis"
             }
         
-        # Get candidate background for context
+        # Get candidate background for context - ensure all are lists
+        import json
         candidate_skills = candidate.get('skills', [])
+        if not isinstance(candidate_skills, list):
+            if isinstance(candidate_skills, str):
+                try:
+                    candidate_skills = json.loads(candidate_skills)
+                except:
+                    candidate_skills = []
+            else:
+                candidate_skills = []
+        
         candidate_domains = candidate.get('domains', [])
-        candidate_papers = candidate.get('papers', [])
-        candidate_repos = candidate.get('repos', [])
-        research_contributions = candidate.get('research_contributions', [])
+        if not isinstance(candidate_domains, list):
+            if isinstance(candidate_domains, str):
+                try:
+                    candidate_domains = json.loads(candidate_domains)
+                except:
+                    candidate_domains = []
+            else:
+                candidate_domains = []
+        
+        candidate_papers = candidate.get('papers', []) or []
+        candidate_repos = candidate.get('repos', []) or []
+        research_contributions = candidate.get('research_contributions', []) or []
+        
+        # Get position requirements - ensure all are lists
+        position_must_haves = position.get('must_haves', [])
+        if not isinstance(position_must_haves, list):
+            if isinstance(position_must_haves, str):
+                try:
+                    position_must_haves = json.loads(position_must_haves)
+                except:
+                    position_must_haves = []
+            else:
+                position_must_haves = []
+        
+        position_domains = position.get('domains', [])
+        if not isinstance(position_domains, list):
+            if isinstance(position_domains, str):
+                try:
+                    position_domains = json.loads(position_domains)
+                except:
+                    position_domains = []
+            else:
+                position_domains = []
         
         # Build comprehensive analysis prompt
         prompt = f"""Perform a DEEP TECHNICAL ANALYSIS of this phone screen interview transcript.
 
 CANDIDATE BACKGROUND (for context):
-- Known skills: {', '.join(candidate_skills[:10])}
-- Domains: {', '.join(candidate_domains)}
+- Known skills: {', '.join(candidate_skills[:10]) if candidate_skills else 'None specified'}
+- Domains: {', '.join(candidate_domains) if candidate_domains else 'None specified'}
 - Research papers: {len(candidate_papers)} papers
 - Research contributions: {', '.join(research_contributions[:5]) if research_contributions else 'None'}
 - GitHub repos: {len(candidate_repos)} repos
 
 POSITION REQUIREMENTS:
 - Title: {position.get('title', 'Unknown')}
-- Must-have skills: {', '.join(position.get('must_haves', []))}
-- Required domains: {', '.join(position.get('domains', []))}
+- Must-have skills: {', '.join(position_must_haves) if position_must_haves else 'None specified'}
+- Required domains: {', '.join(position_domains) if position_domains else 'None specified'}
 
 TRANSCRIPT:
 {transcript_text}

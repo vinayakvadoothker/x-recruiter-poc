@@ -161,7 +161,7 @@ export function EmbeddingsGraph({ data }: EmbeddingsGraphProps) {
         linkOpacity={0}
         backgroundColor="#000000"
         showNavInfo={false}
-        nodeVal={(node: any) => 2}
+        nodeVal={(node: any) => 120000}
         onNodeHover={(node: any) => {
           if (node) {
             // Optional: show tooltip or highlight

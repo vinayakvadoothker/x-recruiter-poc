@@ -45,7 +45,7 @@ const navigation = [
     title: 'Candidates',
     url: '/candidates',
     icon: TrendingUp,
-    disabled: true,
+    disabled: false,
   },
 ];
 

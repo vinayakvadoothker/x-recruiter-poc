@@ -145,15 +145,15 @@ export function PositionDistributionDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col">
+        <DialogHeader className="px-6 pt-6 pb-4 border-b flex-shrink-0">
           <DialogTitle>Distribute Position</DialogTitle>
           <DialogDescription>
             Configure how this position should be distributed and create an X post.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="space-y-6 py-4">
+        <div className="flex-1 overflow-y-auto px-6 py-4 min-h-0 space-y-6">
           {/* Add to Grok Toggle */}
           <div className="flex items-center justify-between">
             <div className="space-y-0.5">
@@ -249,7 +249,7 @@ export function PositionDistributionDialog({
           </div>
         </div>
 
-        <DialogFooter>
+        <DialogFooter className="px-6 pb-6 pt-4 border-t flex-shrink-0">
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Close
           </Button>

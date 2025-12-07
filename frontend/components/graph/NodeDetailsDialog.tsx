@@ -62,7 +62,9 @@ export function NodeDetailsDialog({
   const { data: embeddingData, isLoading: embeddingLoading, error: embeddingError } = useQuery({
     queryKey: ['node-embedding', profileType, profileId],
     queryFn: async () => {
-      if (profileType === 'team') {
+      if (profileType === 'candidate') {
+        return apiClient.getCandidateEmbedding(profileId);
+      } else if (profileType === 'team') {
         return apiClient.getTeamEmbedding(profileId);
       } else if (profileType === 'interviewer') {
         return apiClient.getInterviewerEmbedding(profileId);
@@ -71,13 +73,13 @@ export function NodeDetailsDialog({
       }
       throw new Error(`Unsupported profile type: ${profileType}`);
     },
-    enabled: open && !!node && (profileType === 'team' || profileType === 'interviewer' || profileType === 'position'),
+    enabled: open && !!node && !!profileType && !!profileId,
   });
 
   // Get similar embeddings (cross-type by default)
   const { data: similarData, isLoading: similarLoading, error: similarError } = useQuery({
     queryKey: ['similar-embeddings', profileType, profileId],
-    queryFn: () => apiClient.getSimilarEmbeddings(profileType, profileId, 5, true),
+    queryFn: () => apiClient.getSimilarEmbeddings(profileType, profileId, 20, true),
     enabled: open && !!node && !!profileType && !!profileId,
   });
 
@@ -104,6 +106,7 @@ export function NodeDetailsDialog({
     // Filter by type, similarity, and search query
     Object.entries(grouped).forEach(([type, profiles]) => {
       if (!selectedTypes.has(type)) return;
+      if (!profiles || !Array.isArray(profiles)) return;
 
       const filtered = profiles.filter((profile: any) => {
         // Filter by similarity threshold
@@ -347,17 +350,34 @@ export function NodeDetailsDialog({
                       };
 
                       const originalGrouped = similarData.similar_profiles as {
-                        candidates: Array<any>;
-                        teams: Array<any>;
-                        interviewers: Array<any>;
-                        positions: Array<any>;
+                        candidates?: Array<any>;
+                        teams?: Array<any>;
+                        interviewers?: Array<any>;
+                        positions?: Array<any>;
                       };
 
                       const originalTotalCount = 
-                        originalGrouped.candidates.length +
-                        originalGrouped.teams.length +
-                        originalGrouped.interviewers.length +
-                        originalGrouped.positions.length;
+                        (originalGrouped.candidates?.length || 0) +
+                        (originalGrouped.teams?.length || 0) +
+                        (originalGrouped.interviewers?.length || 0) +
+                        (originalGrouped.positions?.length || 0);
+                      
+                      // If no results at all, show a helpful message
+                      if (originalTotalCount === 0) {
+                        return (
+                          <Alert>
+                            <AlertCircle className="h-4 w-4" />
+                            <AlertDescription>
+                              No similar profiles found. This might be because:
+                              <ul className="list-disc list-inside mt-2 space-y-1">
+                                <li>This profile doesn't have an embedding yet</li>
+                                <li>There are no other profiles in the system</li>
+                                <li>The embedding hasn't been synced yet</li>
+                              </ul>
+                            </AlertDescription>
+                          </Alert>
+                        );
+                      }
                       
                       return (
                         <>
