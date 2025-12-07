@@ -14,7 +14,8 @@ from backend.api.models import (
     HealthResponse,
     Candidate
 )
-from backend.orchestration.pipeline import RecruitingPipeline
+# TODO: Remove - pipeline.py deleted, will be replaced with new inbound pipeline
+# from backend.orchestration.pipeline import RecruitingPipeline
 from backend.orchestration.recruiter_agent import RecruiterAgent
 from backend.simulator.x_dm_simulator import XDMSimulator
 from backend.integrations.grok_api import GrokAPIClient
@@ -23,15 +24,48 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# Initialize shared instances
-pipeline = RecruitingPipeline()
-simulator = XDMSimulator()
-grok_client = GrokAPIClient()
-recruiter_agent = RecruiterAgent(
-    grok_client=grok_client,
-    pipeline=pipeline,
-    simulator=simulator
+# Initialize shared instances (lazy initialization to avoid errors if env vars not set)
+_pipeline = None
+_simulator = None
+_grok_client = None
+_recruiter_agent = None
+
+
+# TODO: Remove - pipeline.py deleted, will be replaced with new inbound pipeline
+# def get_pipeline() -> RecruitingPipeline:
+#     """Get or create pipeline instance."""
+#     global _pipeline
+#     if _pipeline is None:
+#         _pipeline = RecruitingPipeline()
+#     return _pipeline
+
+
+def get_simulator() -> XDMSimulator:
+    """Get or create simulator instance."""
+    global _simulator
+    if _simulator is None:
+        _simulator = XDMSimulator()
+    return _simulator
+
+
+def get_grok_client() -> GrokAPIClient:
+    """Get or create Grok client instance."""
+    global _grok_client
+    if _grok_client is None:
+        _grok_client = GrokAPIClient()
+    return _grok_client
+
+
+def get_recruiter_agent() -> RecruiterAgent:
+    """Get or create recruiter agent instance."""
+    global _recruiter_agent
+    if _recruiter_agent is None:
+        _recruiter_agent = RecruiterAgent(
+            grok_client=get_grok_client(),
+            pipeline=None,  # TODO: Replace with new inbound pipeline
+            simulator=get_simulator()
 )
+    return _recruiter_agent
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -57,11 +91,13 @@ async def trigger_sourcing(role: RoleRequest):
         List of sourced candidates with scores
     """
     try:
-        # Process role request through pipeline
-        result = await pipeline.process_role_request(
-            role.description,
-            role_title=role.title
-        )
+        # TODO: Replace with new inbound pipeline
+        raise HTTPException(status_code=501, detail="Old pipeline removed - new inbound pipeline coming in pivot")
+        # pipeline = get_pipeline()
+        # result = await pipeline.process_role_request(
+        #     role.description,
+        #     role_title=role.title
+        # )
         
         if result.get('error'):
             raise HTTPException(status_code=500, detail=result.get('error'))
@@ -108,7 +144,10 @@ async def get_candidates(role_id: str):
         Ranked list of candidates with graph similarities and bandit scores
     """
     try:
-        candidates_data = pipeline.get_candidates_for_role(role_id)
+        # TODO: Replace with new inbound pipeline
+        raise HTTPException(status_code=501, detail="Old pipeline removed - new inbound pipeline coming in pivot")
+        # pipeline = get_pipeline()
+        # candidates_data = pipeline.get_candidates_for_role(role_id)
         
         if not candidates_data:
             raise HTTPException(status_code=404, detail=f"No candidates found for role {role_id}")
@@ -153,8 +192,12 @@ async def send_outreach(outreach: OutreachRequest):
         Confirmation of outreach sent
     """
     try:
-        # Get candidate and role data
-        candidates = pipeline.get_candidates_for_role(outreach.role_id)
+        # TODO: Replace with new inbound pipeline
+        raise HTTPException(status_code=501, detail="Old pipeline removed - new inbound pipeline coming in pivot")
+        # pipeline = get_pipeline()
+        # grok_client = get_grok_client()
+        # simulator = get_simulator()
+        # candidates = pipeline.get_candidates_for_role(outreach.role_id)
         candidate = None
         for cand in candidates:
             if cand.get('github_handle') == outreach.candidate_id:
@@ -216,6 +259,8 @@ async def submit_feedback(feedback: FeedbackRequest):
         Confirmation of feedback processed
     """
     try:
+        recruiter_agent = get_recruiter_agent()
+        simulator = get_simulator()
         # Process feedback through recruiter agent
         feedback_text = feedback.feedback_text or feedback.feedback_type
         confirmation = await recruiter_agent.collect_feedback(

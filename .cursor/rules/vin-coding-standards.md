@@ -10,9 +10,10 @@
 ## File Structure Rules
 
 ### File Size
-- **Maximum 100 lines per file** (excluding comments/docstrings)
+- **Maximum 200 lines per file** (non-test files, excluding comments/docstrings)
+- **Maximum 100 lines per file** (test files, excluding comments/docstrings)
 - Split into focused, single-responsibility modules
-- If a file exceeds 100 lines, refactor into smaller modules
+- If a file exceeds the limit, refactor into smaller modules
 
 ### File Organization
 - Each file has **one clear purpose**
@@ -23,7 +24,78 @@
 ## Code Documentation Standards
 
 ### Every File Must Have:
-1. **Explainer block at the top** (5-10 lines):
+1. **Research citations** (if applicable):
+   - If the file implements algorithms, methods, or concepts from research papers:
+     - Include detailed citations in the module docstring
+     - Reference specific papers with [1], [2], etc.
+     - Cite specific equations, parameters, or methods used
+     - Clearly distinguish between cited work and novel contributions
+     - See `CITATIONS.md` for paper references and citation format
+   - Example:
+     ```python
+     """
+     fgts_bandit.py - Feel-Good Thompson Sampling with Graph Warm-Start
+     
+     Research Paper Citations:
+     [1] Frazzetto, P., et al. "Graph Neural Networks for Candidate‑Job Matching:
+         An Inductive Learning Approach." Data Science and Engineering, 2025.
+         - Used for: Graph construction and similarity computation
+         - See: backend.graph.graph_builder, backend.graph.graph_similarity
+     
+     [2] Anand, E., & Liaw, S. "Feel-Good Thompson Sampling for Contextual Bandits:
+         a Markov Chain Monte Carlo Showdown." NeurIPS 2025.
+         - Used for: Feel-Good Thompson Sampling algorithm
+         - Feel-good bonus: λ min(b, f_θ(x)) (Equation 1 from [2])
+         - Parameters: λ=0.01 (optimal from [2] Table 4), b=1000 (from [2] setup)
+     
+     Our Novel Contribution:
+     Graph-warm-started bandits: Using graph structure [1] to initialize FG-TS [2]
+     priors. This is the first application of graph structure as prior knowledge
+     for bandit initialization, enabling faster learning and smarter exploration.
+     
+     For more details, see CITATIONS.md.
+     """
+     ```
+
+2. **Implementation Rationale** (MANDATORY):
+   Every file must include a section explaining:
+   - **Why this implementation approach was chosen** vs alternatives
+   - **What alternatives were considered** and why they were rejected
+   - **Trade-offs made** (performance, simplicity, maintainability, etc.)
+   - **Design decisions** that might not be obvious
+   
+   This should be in the module docstring after the explainer block:
+   ```python
+   """
+   [File Name] - [One sentence purpose]
+   
+   This module handles [specific responsibility].
+   
+   Key functions:
+   - function1(): [brief description]
+   - function2(): [brief description]
+   
+   Dependencies:
+   - module1: [why we need it]
+   - module2: [why we need it]
+   
+   Implementation Rationale:
+   We chose [approach] over [alternative] because:
+   - [Reason 1]: [explanation]
+   - [Reason 2]: [explanation]
+   - [Trade-off]: [what we sacrificed for this choice]
+   
+   Alternatives considered:
+   - [Alternative 1]: Rejected because [reason]
+   - [Alternative 2]: Rejected because [reason]
+   
+   Design decisions:
+   - [Decision 1]: [why this was chosen]
+   - [Decision 2]: [why this was chosen]
+   """
+   ```
+
+3. **Explainer block at the top** (5-10 lines):
    ```python
    """
    [File Name] - [One sentence purpose]
@@ -40,13 +112,13 @@
    """
    ```
 
-2. **LLM-friendly comments** throughout:
+3. **LLM-friendly comments** throughout:
    - Explain WHY, not just WHAT
    - Use clear, descriptive variable names
    - Comment complex logic or algorithms
    - Reference papers/equations when applicable
 
-3. **API documentation** for all functions/classes:
+4. **API documentation** for all functions/classes:
    ```python
    def function_name(param1: Type, param2: Type) -> ReturnType:
        """
@@ -97,9 +169,51 @@
 5. **Move on** (don't over-optimize)
 
 ### Test Requirements:
-- Test happy path
-- Test edge cases
-- Test error conditions
+
+**Test Structure (MANDATORY)**:
+Each phase must have tests organized in 4 difficulty levels:
+- `tests/phaseX_name/easy/` - Basic functionality tests
+- `tests/phaseX_name/medium/` - Edge cases and error handling
+- `tests/phaseX_name/hard/` - Complex scenarios and integration
+- `tests/phaseX_name/super_hard/` - Stress tests and performance
+
+**Test Documentation (MANDATORY)**:
+Every test file MUST include in its docstring:
+- **Why this test exists**: Clear reasoning explaining the purpose
+- **What it validates**: Specific functionality being tested
+- **Expected behavior**: What should happen when the test passes
+
+Example:
+```python
+"""
+test_basic_embedding.py - Basic embedding functionality tests
+
+Why this test exists:
+This test verifies that all 4 embed methods (candidate, team, interviewer, position)
+work correctly with valid input. This is critical because embeddings are the foundation
+of our similarity search and matching system.
+
+What it validates:
+- embed_candidate() returns valid embedding vector
+- embed_team() returns valid embedding vector
+- embed_interviewer() returns valid embedding vector
+- embed_position() returns valid embedding vector
+- All embeddings have correct dimensions (768 for MPNet)
+- All embeddings are normalized (unit vectors)
+
+Expected behavior:
+- All 4 methods should return numpy arrays of shape (768,)
+- All embeddings should be normalized (||embedding|| ≈ 1.0)
+- No errors or exceptions should be raised
+"""
+```
+
+**Test Requirements**:
+- Test happy path (easy tests)
+- Test edge cases (medium tests)
+- Test error conditions (medium/hard tests)
+- Test complex scenarios (hard tests)
+- Test performance/stress (super_hard tests)
 - Verify it works before moving on
 
 ## Development Process
@@ -112,12 +226,15 @@
 
 ### Code Review Checklist
 Before considering code "done":
-- [ ] File is under 100 lines
+- [ ] File is under 200 lines (non-test files) or 100 lines (test files)
+- [ ] Has research citations (if applicable)
 - [ ] Has explainer block at top
+- [ ] Has implementation rationale (why this approach vs alternatives)
 - [ ] Has API documentation
 - [ ] Has LLM-friendly comments
 - [ ] No TODO comments
-- [ ] Tests written and passing
+- [ ] Tests written and passing (all 4 levels: easy, medium, hard, super_hard)
+- [ ] All test files have clear reasoning in docstrings (why each test exists)
 - [ ] Code is readable by any engineer
 
 ## Examples
@@ -130,6 +247,12 @@ graph_builder.py - Builds bipartite graphs for candidate-role matching
 This module constructs graph structures following the GNN paper [1],
 creating bipartite graphs with candidate/role nodes connected via
 entity nodes (skills, experience, education).
+
+Research Paper Citations:
+[1] Frazzetto, P., et al. "Graph Neural Networks for Candidate‑Job Matching:
+    An Inductive Learning Approach." Data Science and Engineering, 2025.
+    - Used for: Bipartite graph construction methodology
+    - See CITATIONS.md for full citation details
 
 Key functions:
 - build_candidate_role_graph(): Main graph construction
@@ -285,16 +408,23 @@ GROK_API_KEY=xxx  # (via Ishaan's integration)
 ### When to Ask Human Assistant
 
 **Ask immediately when you need:**
-1. **API Keys**: Grok API key, GitHub token (if needed)
-2. **Database Credentials**: Neo4j password, connection strings
-3. **Docker Setup**: If Docker containers need to be started
-4. **Testing**: Real API calls, real database connections
-5. **Environment Setup**: Missing dependencies, configuration issues
+1. **API Keys**: Grok API key, GitHub token, X API key, arXiv API key, LinkedIn access, etc.
+2. **API Access**: API account creation, API approval, rate limits, authentication setup
+3. **API Documentation**: Official API docs, endpoint specifications, request/response formats
+4. **Database Credentials**: Neo4j password, connection strings, Weaviate setup, vector DB credentials
+5. **Docker Setup**: If Docker containers need to be started, Docker Compose configuration
+6. **Testing**: Real API calls, real database connections, test data access
+7. **Environment Setup**: Missing dependencies, configuration issues, environment variable values
+8. **External Services**: Access to third-party services, account setup, service configuration
+9. **Documentation**: Research papers, technical specifications, implementation guides
+10. **Any Blockers**: If you're stuck and need help, ask immediately
 
 **How to Ask:**
 - Be specific: "I need the GROK_API_KEY added to .env"
 - Provide context: "For entity extraction in Hour 2"
+- Include what you need: "I need access to the X API documentation for implementing the X API client"
 - Don't proceed with mocks - wait for real values
+- If blocked: "I'm blocked on [X] and need [Y] to proceed"
 
 ### .env File Structure
 Human assistant will create/maintain `.env`:
@@ -320,8 +450,16 @@ GITHUB_TOKEN=<human assistant sets this>
 ### No Mocking Policy
 - **Never create mock functions** for APIs or databases
 - **Never simulate** responses or data
-- **Ask human assistant** for real API keys, real database access
+- **Ask human assistant** for real API keys, real database access, API documentation, etc.
 - If something isn't ready, **wait and ask** rather than mocking
+- **Never guess** API endpoints, request formats, or authentication methods - ask for documentation
+
+### Asking for Help
+- **Ask early, ask often** - Don't waste time trying to figure out API details
+- **Be specific** - "I need the X API documentation" not "I need help with X API"
+- **Provide context** - Explain what you're trying to build and why you need it
+- **List what you need** - If you need multiple things, list them all at once
+- **Don't assume** - If you're not sure about something, ask rather than guessing
 
 ## Git & Version Control
 
@@ -355,6 +493,33 @@ GITHUB_TOKEN=<human assistant sets this>
 - Review `.gitignore` before first commit
 - Verify sensitive data isn't tracked: `git status` before committing
 
+## Checklist Management
+
+### Always Check Off Checklist Items
+- **MANDATORY**: After completing each phase, check off ALL checklist items in `vin_pivot_plan.md`
+- **Update checklist immediately** after completing tasks - don't wait until the end
+- **Verify completion**: Before moving to next phase, ensure all items are checked off
+- **Track progress**: Use checklist to track what's done and what's left
+
+### Error Checking
+- **Check for errors after EVERY phase**: Run tests, check imports, verify linting
+- **No errors allowed**: Fix all errors before moving to next phase
+- **Test before moving on**: Always run `pytest tests/ -v` after each phase
+- **Import verification**: Always verify imports work: `python -c "from backend.module import Class"`
+- **Linting check**: Run linting checks to catch errors early
+- **Don't accumulate errors**: Fix errors immediately, don't let them pile up
+
+### Phase Completion Checklist
+At the end of each phase, ALWAYS:
+1. [ ] Check off all checklist items for that phase
+2. [ ] Run all tests for that phase: `pytest tests/phaseX_name/ -v` (all 4 levels: easy, medium, hard, super_hard)
+3. [ ] Verify no import errors: `python -c "from backend.module import Class"`
+4. [ ] Check for linting errors: `pytest --collect-only` (should not error)
+5. [ ] Verify functionality works as expected
+6. [ ] Verify all test files have clear reasoning in docstrings (why each test exists)
+7. [ ] Update checklist in `vin_pivot_plan.md`
+8. [ ] Only then move to next phase
+
 ## Remember
 
 - **Production-grade, not prototype**
@@ -364,4 +529,6 @@ GITHUB_TOKEN=<human assistant sets this>
 - **No TODOs in code**
 - **Use the right tool for the job** - Don't over-engineer
 - **Proper .gitignore** - Never commit secrets or artifacts
+- **ALWAYS check off checklist items** - Track progress in real-time
+- **ALWAYS check for errors** - Fix errors immediately, don't accumulate them
 

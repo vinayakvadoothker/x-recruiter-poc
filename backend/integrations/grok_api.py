@@ -169,7 +169,7 @@ Example format:
         """
         url = f"{self.base_url}/chat/completions"
         payload = {
-            "model": "grok-beta",
+            "model": "grok-4-latest",  # Using latest Grok 4 model from xAI
             "messages": [
                 {
                     "role": "user",

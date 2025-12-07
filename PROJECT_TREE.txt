@@ -1,0 +1,116 @@
+# Project Directory Structure
+# Generated: 2025-12-06 20:27:58
+
+```
+x-recruiter-poc/
+├── CITATIONS.md
+├── Dockerfile
+├── ENV_REQUIREMENTS.md
+├── PROGRESS_ANALYSIS.md
+├── PROJECT_TREE.txt
+├── README.md
+├── backend/
+│   ├── algorithms/
+│   │   ├── README.md
+│   │   ├── bandit_utils.py
+│   │   ├── fgts_bandit.py
+│   │   ├── learning_data_export.py
+│   │   └── learning_tracker.py
+│   ├── api/
+│   │   ├── __init__.py
+│   │   ├── main.py
+│   │   ├── models.py
+│   │   └── routes.py
+│   ├── database/
+│   │   ├── README.md
+│   │   ├── kg_crud.py
+│   │   ├── kg_relationships.py
+│   │   ├── knowledge_graph.py
+│   │   ├── vector_db_client.py
+│   │   ├── weaviate_connection.py
+│   │   └── weaviate_schema.py
+│   ├── datasets/
+│   │   ├── __init__.py
+│   │   ├── dataset_loader.py
+│   │   ├── sample_candidates.py
+│   │   ├── sample_interviewers.py
+│   │   ├── sample_positions.py
+│   │   └── sample_teams.py
+│   ├── demo/
+│   │   └── __init__.py
+│   ├── embeddings/
+│   │   ├── __init__.py
+│   │   └── recruiting_embedder.py
+│   ├── graph/
+│   │   ├── README.md
+│   │   └── graph_builder.py
+│   ├── integrations/
+│   │   ├── __init__.py
+│   │   ├── api_utils.py
+│   │   ├── github_api.py
+│   │   ├── grok_api.py
+│   │   └── x_api.py
+│   ├── orchestration/
+│   │   ├── __init__.py
+│   │   └── recruiter_agent.py
+│   ├── simulator/
+│   │   ├── __init__.py
+│   │   └── x_dm_simulator.py
+│   └── __init__.py
+├── docker-compose.yml
+├── ishaan_pivot_plan.md
+├── pivot_plan.md
+├── requirements-vin.txt
+├── requirements.txt
+├── scripts/
+│   ├── generate_tree.py
+│   └── generate_tree.sh
+├── tests/
+│   ├── phase2_embedder/
+│   │   ├── easy/
+│   │   │   └── test_basic_embedding.py
+│   │   ├── hard/
+│   │   │   └── test_consistency_and_similarity.py
+│   │   ├── medium/
+│   │   │   ├── __init__.py
+│   │   │   └── test_edge_cases.py
+│   │   ├── super_hard/
+│   │   │   └── test_performance_and_stress.py
+│   │   └── __init__.py
+│   ├── phase3_vector_db/
+│   │   ├── easy/
+│   │   │   └── test_basic_operations.py
+│   │   ├── hard/
+│   │   │   ├── __init__.py
+│   │   │   └── test_integration.py
+│   │   ├── medium/
+│   │   │   ├── __init__.py
+│   │   │   └── test_edge_cases.py
+│   │   ├── super_hard/
+│   │   │   └── test_performance.py
+│   │   └── __init__.py
+│   ├── phase4_datasets/
+│   │   ├── easy/
+│   │   │   └── test_schema_compliance.py
+│   │   ├── hard/
+│   │   │   └── test_batch_loading.py
+│   │   ├── medium/
+│   │   │   └── test_generator_variety.py
+│   │   ├── super_hard/
+│   │   │   └── test_scale_performance.py
+│   │   └── __init__.py
+│   ├── phase4_knowledge_graph/
+│   │   ├── easy/
+│   │   │   └── test_basic_crud.py
+│   │   ├── hard/
+│   │   │   └── test_relationships.py
+│   │   ├── medium/
+│   │   │   ├── __init__.py
+│   │   │   └── test_edge_cases.py
+│   │   ├── super_hard/
+│   │   │   ├── __init__.py
+│   │   │   └── test_integration.py
+│   │   └── __init__.py
+│   └── __init__.py
+└── vin_pivot_plan.md
+```

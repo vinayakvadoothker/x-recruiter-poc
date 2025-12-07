@@ -6,11 +6,12 @@ Handles recruiter messages, processes role requests, and manages candidate inter
 
 import logging
 import re
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 
 from backend.integrations.grok_api import GrokAPIClient
-from backend.orchestration.pipeline import RecruitingPipeline
+from backend.orchestration.feedback_loop import FeedbackLoop
 from backend.simulator.x_dm_simulator import XDMSimulator
+from backend.database.knowledge_graph import KnowledgeGraph
 
 logger = logging.getLogger(__name__)
 
@@ -26,20 +27,30 @@ class RecruiterAgent:
     def __init__(
         self,
         grok_client: Optional[GrokAPIClient] = None,
-        pipeline: Optional[RecruitingPipeline] = None,
-        simulator: Optional[XDMSimulator] = None
+        pipeline: Optional[Any] = None,  # For inbound pipeline (Ishaan's work)
+        simulator: Optional[XDMSimulator] = None,
+        feedback_loop: Optional[FeedbackLoop] = None,
+        knowledge_graph: Optional[KnowledgeGraph] = None
     ):
         """
         Initialize recruiter agent.
         
         Args:
             grok_client: Grok API client instance
-            pipeline: Recruitment pipeline instance
+            pipeline: Recruitment pipeline instance (for inbound - Ishaan's work)
             simulator: X DM simulator instance
+            feedback_loop: Feedback loop instance (creates new if None)
+            knowledge_graph: Knowledge graph instance (for feedback loop)
         """
         self.grok = grok_client or GrokAPIClient()
-        self.pipeline = pipeline or RecruitingPipeline()
+        self.pipeline = pipeline  # For inbound pipeline (Ishaan's work)
         self.simulator = simulator or XDMSimulator()
+        self.kg = knowledge_graph or KnowledgeGraph()
+        # Initialize feedback loop with Grok client for LLM-based parsing
+        self.feedback_loop = feedback_loop or FeedbackLoop(
+            knowledge_graph=self.kg,
+            grok_client=self.grok
+        )
         self.conversation_state: Dict[str, any] = {}
         logger.info("RecruiterAgent initialized")
     
@@ -101,7 +112,9 @@ class RecruiterAgent:
                     'message': await self._ask_clarifying_questions(role_description)
                 }
             
-            # Process through pipeline
+            # Inbound pipeline (Ishaan's work) - for now return error if not available
+            if not self.pipeline:
+                return {'error': 'Inbound pipeline not available - Ishaan\'s work in progress'}
             result = await self.pipeline.process_role_request(
                 role_description,
                 role_title=role_title
@@ -125,40 +138,41 @@ class RecruiterAgent:
         """
         Collect and process feedback on a candidate.
         
+        This method connects recruiter feedback to the feedback loop, enabling
+        the self-improving agent to learn from feedback.
+        
         Args:
             feedback_text: Feedback text from recruiter
             candidate_id: Candidate identifier
-            role_id: Role identifier
+            role_id: Role/position identifier
         
         Returns:
-            Confirmation message
+            Confirmation message with learning metrics
         """
         try:
-            # Parse feedback
-            feedback_type, reward = await self._parse_feedback(feedback_text)
-            
-            # Update bandit if we have the necessary info
+            # Process feedback through feedback loop
             if candidate_id and role_id:
-                # Get candidates for role
-                candidates = self.pipeline.get_candidates_for_role(role_id)
+                result = await self.feedback_loop.process_feedback(
+                    candidate_id=candidate_id,
+                    position_id=role_id,
+                    feedback_text=feedback_text
+                )
                 
-                # Find candidate index
-                candidate_idx = None
-                for i, candidate in enumerate(candidates):
-                    if candidate.get('github_handle') == candidate_id:
-                        candidate_idx = i
-                        break
-                
-                if candidate_idx is not None:
-                    # Update bandit (this would call Vin's update() method)
-                    # For now, we'll just log it
-                    logger.info(f"Feedback received: {feedback_type}, reward: {reward}, candidate: {candidate_id}")
-                    # TODO: Call bandit.update() when Vin's code is ready
-            
-            return f"Thank you for the feedback! I've noted that this candidate is {feedback_type}. I'll use this to improve future recommendations."
+                if result.get('success'):
+                    # Return message with learning metrics
+                    return result.get('message', "Thank you for the feedback!")
+                else:
+                    # Feedback processed but couldn't update bandit (e.g., candidate not in list)
+                    error = result.get('error', 'Unknown error')
+                    logger.warning(f"Feedback processed but bandit not updated: {error}")
+                    return f"Thank you for the feedback! I've recorded it. ({error})"
+            else:
+                # Missing candidate_id or role_id - just acknowledge
+                logger.warning("Feedback received but missing candidate_id or role_id")
+                return "Thank you for the feedback! I'll use this to improve future recommendations."
             
         except Exception as e:
-            logger.error(f"Error collecting feedback: {e}")
+            logger.error(f"Error collecting feedback: {e}", exc_info=True)
             return "I encountered an error processing your feedback. Please try again."
     
     async def _parse_intent(self, message: str) -> str:
@@ -269,6 +283,9 @@ Keep your response under 200 characters and friendly."""
         if not role_id:
             return "I don't have an active role. Please start by describing a role you need to fill."
         
+        # Inbound pipeline (Ishaan's work) - for now return error if not available
+        if not self.pipeline:
+            return "Inbound pipeline not available - Ishaan's work in progress"
         candidates = self.pipeline.get_candidates_for_role(role_id)
         if not candidates:
             return "No candidates found for this role."

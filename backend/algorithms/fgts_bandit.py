@@ -1,14 +1,14 @@
 """
-fgts_bandit.py - Feel-Good Thompson Sampling with Graph Warm-Start
+fgts_bandit.py - Feel-Good Thompson Sampling with Embedding Warm-Start
 
 This module implements Feel-Good Thompson Sampling (FG-TS) algorithm [2]
-with graph-based warm-start initialization for candidate selection.
+with embedding-based warm-start initialization for candidate selection.
 
 Research Paper Citations:
 [1] Frazzetto, P., et al. "Graph Neural Networks for Candidate‑Job Matching:
     An Inductive Learning Approach." Data Science and Engineering, 2025.
-    - Used for: Graph construction and similarity computation
-    - See: backend.graph.graph_builder, backend.graph.graph_similarity
+    - Used for: Original graph-based similarity approach (now replaced with embeddings)
+    - See: backend.graph.graph_builder (kept for reference, not used in warm-start)
 
 [2] Anand, E., & Liaw, S. "Feel-Good Thompson Sampling for Contextual Bandits:
     a Markov Chain Monte Carlo Showdown." NeurIPS 2025.
@@ -18,55 +18,67 @@ Research Paper Citations:
     - Why: Provides optimal exploration with proven regret guarantees O(d√T)
 
 Our Novel Contribution:
-Graph-warm-started bandits: Using graph structure [1] to initialize FG-TS [2]
-priors. This is the first application of graph structure as prior knowledge
-for bandit initialization, enabling faster learning and smarter exploration.
+Embedding-warm-started bandits: Using embedding similarity to initialize FG-TS [2]
+priors. This adapts the graph warm-start concept [1] to use vector embeddings
+instead, enabling faster learning and smarter exploration with our specialized
+recruiting embedder.
 
 For more details, see CITATIONS.md.
 
 Key functions:
-- GraphWarmStartedFGTS: Main bandit class (combines [1] + [2] + our innovation)
+- GraphWarmStartedFGTS: Main bandit class (combines [2] + our innovation)
 - select_candidate(): Select candidate using FG-TS [2]
 - update(): Update bandit after observing reward (Bayesian update)
-- initialize_from_graph(): Our innovation - graph warm-start
+- initialize_from_embeddings(): Our innovation - embedding warm-start
 
 Dependencies:
 - numpy: Numerical computations and beta distribution
-- backend.graph.graph_similarity: Graph similarity computation [1]
+- backend.embeddings: Specialized embedder for recruiting profiles
 """
 
 import numpy as np
 from typing import Dict, List, Optional, Any
-import networkx as nx
-from backend.graph.graph_similarity import compute_graph_similarity
-from backend.graph.graph_builder import build_candidate_role_graph
+from backend.embeddings import RecruitingKnowledgeGraphEmbedder
 
 
 class GraphWarmStartedFGTS:
     """
-    Feel-Good Thompson Sampling with graph warm-start initialization.
+    Feel-Good Thompson Sampling with embedding warm-start initialization.
     
     Combines:
-    - Graph construction from Frazzetto et al. [1] (see graph_builder.py)
     - Feel-Good Thompson Sampling from Anand & Liaw [2]
-    - Our innovation: Graph structure → FG-TS prior initialization
+    - Our innovation: Embedding similarity → FG-TS prior initialization
     
-    The algorithm uses graph similarity [1] between candidates and roles to
-    set initial alpha/beta priors for FG-TS [2], making exploration smarter
+    The algorithm uses embedding cosine similarity between candidates and positions
+    to set initial alpha/beta priors for FG-TS [2], making exploration smarter
     from the start. This is a novel combination not found in either paper.
     
-    Novel contribution: High graph similarity → optimistic prior (higher alpha),
+    Novel contribution: High embedding similarity → optimistic prior (higher alpha),
     low similarity → pessimistic prior (higher beta). This enables faster
     learning compared to cold-start (uniform priors).
+    
+    Implementation Rationale:
+    - Why embeddings over graphs: Embeddings are faster to compute, scale better,
+      and work directly with our vector DB. The semantic similarity captured by
+      embeddings is sufficient for warm-start initialization.
+    - Why keep the name "GraphWarmStartedFGTS": Backward compatibility and the
+      concept (warm-start from similarity) remains the same, just the similarity
+      source changed from graphs to embeddings.
     """
     
-    def __init__(self, lambda_fg: float = 0.01, b: float = 1000.0):
+    def __init__(
+        self,
+        lambda_fg: float = 0.01,
+        b: float = 1000.0,
+        embedder: Optional[RecruitingKnowledgeGraphEmbedder] = None
+    ):
         """
         Initialize FG-TS bandit.
         
         Parameters from Anand & Liaw [2]:
         - lambda_fg: Feel-good parameter (0.01, optimal from [2] Table 4)
         - b: Cap parameter for feel-good bonus (1000, from [2] experimental setup)
+        - embedder: Embedder instance (creates new if None)
         
         These parameters were found to provide optimal performance in [2]'s
         ablation study and experimental evaluation.
@@ -74,12 +86,64 @@ class GraphWarmStartedFGTS:
         Args:
             lambda_fg: Feel-good parameter (default 0.01 from [2])
             b: Cap parameter for feel-good bonus (default 1000 from [2])
+            embedder: Embedder instance for generating embeddings (defaults to new instance)
         """
         self.lambda_fg = lambda_fg
         self.b = b
+        self.embedder = embedder or RecruitingKnowledgeGraphEmbedder()
         self.alpha: Dict[int, float] = {}
         self.beta: Dict[int, float] = {}
         self.num_arms = 0
+    
+    def initialize_from_embeddings(
+        self,
+        candidates: List[Dict[str, Any]],
+        position_data: Dict[str, Any]
+    ) -> None:
+        """
+        Initialize bandit with embedding-based priors (OUR NOVEL CONTRIBUTION).
+        
+        This is the key innovation: using embedding similarity to initialize
+        FG-TS [2] priors, enabling faster learning than cold-start.
+        
+        Process:
+        1. Generate position embedding using specialized embedder
+        2. Generate candidate embeddings for all candidates
+        3. Compute cosine similarity between each candidate and position
+        4. Convert similarity to priors: high similarity → optimistic (higher alpha),
+           low similarity → pessimistic (higher beta)
+        
+        This warm-start approach adapts the graph-based concept to embeddings,
+        providing the same benefits (faster learning) with better scalability.
+        
+        Args:
+            candidates: List of candidate data dictionaries
+            position_data: Position data dictionary for embedding generation
+        """
+        if not candidates:
+            raise ValueError("Candidates list cannot be empty")
+        
+        self.num_arms = len(candidates)
+        
+        # Generate position embedding
+        position_embedding = self.embedder.embed_position(position_data)
+        
+        # Compute similarities for all candidates
+        for i, candidate in enumerate(candidates):
+            # Generate candidate embedding
+            candidate_embedding = self.embedder.embed_candidate(candidate)
+            
+            # Compute cosine similarity (embeddings are already normalized)
+            similarity = float(np.dot(candidate_embedding, position_embedding))
+            # Clamp to [0, 1] range (should already be in this range for normalized embeddings)
+            similarity = max(0.0, min(1.0, similarity))
+            
+            # Convert similarity to priors
+            # High similarity → optimistic (explore more) → higher alpha
+            # Low similarity → pessimistic (explore less) → higher beta
+            # Scale factor of 10.0 provides reasonable prior strength
+            self.alpha[i] = 1.0 + similarity * 10.0
+            self.beta[i] = 1.0 + (1.0 - similarity) * 10.0
     
     def initialize_from_graph(
         self,
@@ -87,42 +151,19 @@ class GraphWarmStartedFGTS:
         role_data: Dict[str, Any]
     ) -> None:
         """
-        Initialize bandit with graph-based priors (OUR NOVEL CONTRIBUTION).
+        DEPRECATED: Initialize bandit with graph-based priors.
         
-        This is the key innovation: using graph structure [1] to initialize
-        FG-TS [2] priors, enabling faster learning than cold-start.
-        
-        Process:
-        1. Build graphs using Frazzetto et al. [1] methodology
-        2. Compute graph similarity using kNN approach [1] Equation 1
-        3. Convert similarity to priors: high similarity → optimistic (higher alpha),
-           low similarity → pessimistic (higher beta)
-        
-        This warm-start approach is novel - neither [1] nor [2] use graph
-        structure to initialize bandit priors.
+        This method is deprecated. Use initialize_from_embeddings() instead.
+        Kept for backward compatibility.
         
         Args:
             candidates: List of candidate data dictionaries
             role_data: Role data dictionary for graph construction
         """
-        self.num_arms = len(candidates)
-        
-        # Build role graph
-        role_graph = build_candidate_role_graph({'id': 'role'}, role_data)
-        
-        # Compute graph similarities for all candidates
-        for i, candidate in enumerate(candidates):
-            # Build candidate graph
-            candidate_graph = build_candidate_role_graph(candidate, {'id': 'dummy'})
-            
-            # Compute graph similarity
-            similarity = compute_graph_similarity(role_graph, candidate_graph)
-            
-            # Convert similarity to priors
-            # High similarity → optimistic (explore more)
-            # Low similarity → pessimistic (explore less)
-            self.alpha[i] = 1.0 + similarity * 10.0
-            self.beta[i] = 1.0 + (1.0 - similarity) * 10.0
+        raise NotImplementedError(
+            "initialize_from_graph() is deprecated. "
+            "Use initialize_from_embeddings() instead."
+        )
     
     def select_candidate(self) -> int:
         """
@@ -141,7 +182,7 @@ class GraphWarmStartedFGTS:
             Index of selected candidate
         """
         if self.num_arms == 0:
-            raise ValueError("No candidates. Call initialize_from_graph() first.")
+            raise ValueError("No candidates. Call initialize_from_embeddings() first.")
         
         samples = {}
         

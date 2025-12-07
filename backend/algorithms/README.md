@@ -1,6 +1,6 @@
 # Algorithms Module
 
-This module implements the Feel-Good Thompson Sampling algorithm with graph warm-start.
+This module implements the Feel-Good Thompson Sampling algorithm with embedding warm-start.
 
 ## Modules
 
@@ -8,14 +8,14 @@ This module implements the Feel-Good Thompson Sampling algorithm with graph warm
 Main bandit algorithm implementation.
 
 **Key Classes:**
-- `GraphWarmStartedFGTS`: Feel-Good Thompson Sampling with graph warm-start
+- `GraphWarmStartedFGTS`: Feel-Good Thompson Sampling with embedding warm-start
 
 **Usage:**
 ```python
 from backend.algorithms.fgts_bandit import GraphWarmStartedFGTS
 
 bandit = GraphWarmStartedFGTS(lambda_fg=0.01, b=1000.0)
-bandit.initialize_from_graph(candidates, role_data)
+bandit.initialize_from_embeddings(candidates, position_data)
 
 selected = bandit.select_candidate()
 bandit.update(selected, reward=1.0)

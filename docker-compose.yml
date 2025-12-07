@@ -1,19 +1,20 @@
 services:
-  neo4j:
-    image: neo4j:latest
-    container_name: x-recruiter-neo4j
+  weaviate:
+    image: semitechnologies/weaviate:latest
+    container_name: x-recruiter-weaviate
     ports:
-      - "7474:7474"  # HTTP
-      - "7687:7687"  # Bolt
+      - "8080:8080"
     environment:
-      - NEO4J_AUTH=neo4j/password
-      - NEO4J_PLUGINS=["apoc"]
+      - QUERY_DEFAULTS_LIMIT=25
+      - AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED=true
+      - PERSISTENCE_DATA_PATH=/var/lib/weaviate
+      - DEFAULT_VECTORIZER_MODULE=none
+      - ENABLE_MODULES=text2vec-openai,text2vec-cohere,text2vec-huggingface
     volumes:
-      - neo4j_data:/data
-      - neo4j_logs:/logs
+      - weaviate_data:/var/lib/weaviate
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "cypher-shell", "-u", "neo4j", "-p", "password", "RETURN 1"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/v1/.well-known/ready"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -24,18 +25,15 @@ services:
       dockerfile: Dockerfile
     container_name: x-recruiter-app
     depends_on:
-      neo4j:
+      weaviate:
         condition: service_healthy
     environment:
-      - NEO4J_URI=bolt://neo4j:7687
-      - NEO4J_USER=neo4j
-      - NEO4J_PASSWORD=password
+      - WEAVIATE_URL=http://weaviate:8080
     volumes:
       - ./backend:/app/backend
       - ./tests:/app/tests
     command: python -m pytest tests/ -v
 
 volumes:
-  neo4j_data:
-  neo4j_logs:
+  weaviate_data:
 

@@ -310,4 +310,3 @@ Our novel contribution is using graph structure to warm-start FG-TS priors, whic
 - ✅ First application of graph structure as prior for bandits
 
 This is honest, accurate, and shows you understand the papers while making a real contribution.
-
