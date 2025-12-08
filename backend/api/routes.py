@@ -4,6 +4,7 @@ API route handlers for Grok Recruiter endpoints.
 
 import logging
 import httpx
+import time
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from typing import List, Dict, Any, Optional
@@ -56,6 +57,8 @@ from backend.database.weaviate_connection import create_weaviate_client
 from backend.database.weaviate_schema import create_profile_schemas
 from backend.orchestration.company_context import get_company_context
 from backend.embeddings.recruiting_embedder import RecruitingKnowledgeGraphEmbedder
+from backend.orchestration.outbound_gatherer import OutboundGatherer
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -5152,6 +5155,258 @@ async def get_pipeline_history(candidate_id: str, position_id: str):
     except Exception as e:
         logger.error(f"Error getting pipeline history: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Error getting pipeline history: {str(e)}")
+
+
+@router.post("/chat/graph", response_model=Dict)
+async def chat_with_graph(request: Dict):
+    """
+    Chat interface for knowledge graph queries.
+    
+    Allows natural language queries about candidates, teams, positions, and interviewers.
+    Uses Grok AI for query parsing and response formatting.
+    
+    Args:
+        request: Dict with query, session_id, and history
+    
+    Returns:
+        Response with formatted text and results
+    """
+    try:
+        from backend.orchestration.chat_service import GraphChatService
+        
+        query = request.get("query", "")
+        session_id = request.get("session_id", f"session-{int(time.time())}")
+        history = request.get("history", [])
+        
+        if not query:
+            raise HTTPException(status_code=400, detail="Query is required")
+        
+        chat_service = GraphChatService()
+        result = await chat_service.chat(query, session_id, history)
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error in chat with graph: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error processing chat query: {str(e)}")
+
+
+@router.post("/outbound-signals", response_model=Dict)
+async def analyze_outbound_signals(request: Dict):
+    """
+    Analyze outbound signals from GitHub, arXiv, and X.
+    
+    Takes GitHub URL, arXiv identifier, and X handle, gathers data from all sources,
+    generates embeddings, and matches to positions. No storage - one-off analysis.
+    
+    Args:
+        request: Dict with:
+            - github_url: Optional GitHub URL or username
+            - arxiv_id: Optional arXiv author ID or paper ID
+            - x_handle: Optional X handle (without @)
+            - position_id: Optional position ID to match against (if not provided, matches all)
+    
+    Returns:
+        Dict with:
+            - candidate_profile: Merged profile from all sources
+            - embedding: Generated embedding vector
+            - position_matches: List of position matches with similarity scores
+    """
+    try:
+        github_url = request.get("github_url", "").strip()
+        arxiv_id = request.get("arxiv_id", "").strip()
+        x_handle = request.get("x_handle", "").strip()
+        position_id = request.get("position_id")
+        
+        if not any([github_url, arxiv_id, x_handle]):
+            raise HTTPException(status_code=400, detail="At least one source (GitHub, arXiv, or X) is required")
+        
+        # Initialize gatherer
+        gatherer = OutboundGatherer()
+        embedder = RecruitingKnowledgeGraphEmbedder()
+        
+        # Gather from all sources in parallel
+        gathered_data = {}
+        
+        if github_url:
+            # Extract username from URL or use as-is
+            github_handle = github_url.replace("https://github.com/", "").replace("github.com/", "").split("/")[0].strip()
+            if github_handle:
+                logger.info(f"Gathering from GitHub: {github_handle}")
+                github_data = await gatherer.gather_from_github(github_handle)
+                if github_data:
+                    gathered_data["github"] = github_data
+        
+        if arxiv_id:
+            logger.info(f"Gathering from arXiv: {arxiv_id}")
+            # Try as author ID first, then as paper ID
+            arxiv_data = await gatherer.gather_from_arxiv(arxiv_author_id=arxiv_id)
+            if not arxiv_data:
+                # Try as paper ID list
+                arxiv_data = await gatherer.gather_from_arxiv(arxiv_ids=[arxiv_id])
+            if arxiv_data:
+                gathered_data["arxiv"] = arxiv_data
+        
+        if x_handle:
+            x_handle = x_handle.lstrip("@")
+            logger.info(f"Gathering from X: {x_handle}")
+            x_data = await gatherer.gather_from_x(x_handle)
+            if x_data:
+                gathered_data["x"] = x_data
+        
+        if not gathered_data:
+            raise HTTPException(status_code=404, detail="No data gathered from any source")
+        
+        # Merge profiles (prioritize: X > GitHub > arXiv for basic info)
+        merged_profile = {}
+        
+        # Start with X data if available
+        if "x" in gathered_data:
+            merged_profile.update(gathered_data["x"])
+        
+        # Merge GitHub data
+        if "github" in gathered_data:
+            github = gathered_data["github"]
+            # Merge skills (union)
+            merged_profile["skills"] = list(set(merged_profile.get("skills", []) + github.get("skills", [])))
+            # Merge domains (union)
+            merged_profile["domains"] = list(set(merged_profile.get("domains", []) + github.get("domains", [])))
+            # Merge experience (combine)
+            merged_profile["experience"] = (merged_profile.get("experience", []) + github.get("experience", []))[:10]
+            # Use max experience years
+            merged_profile["experience_years"] = max(
+                merged_profile.get("experience_years", 0),
+                github.get("experience_years", 0)
+            )
+            # Use higher expertise level
+            level_order = {"Junior": 1, "Mid": 2, "Senior": 3, "Staff": 4}
+            merged_profile["expertise_level"] = max(
+                [merged_profile.get("expertise_level", "Mid"), github.get("expertise_level", "Mid")],
+                key=lambda x: level_order.get(x, 2)
+            )
+            # Add GitHub-specific data
+            merged_profile["github_stats"] = github.get("github_stats", {})
+            merged_profile["repos"] = github.get("repos", [])
+            if not merged_profile.get("name"):
+                merged_profile["name"] = github.get("name")
+            if not merged_profile.get("github_handle"):
+                merged_profile["github_handle"] = github.get("github_handle")
+        
+        # Merge arXiv data
+        if "arxiv" in gathered_data:
+            arxiv = gathered_data["arxiv"]
+            # Merge skills (union)
+            merged_profile["skills"] = list(set(merged_profile.get("skills", []) + arxiv.get("skills", [])))
+            # Merge domains (union)
+            merged_profile["domains"] = list(set(merged_profile.get("domains", []) + arxiv.get("domains", [])))
+            # Merge experience (combine)
+            merged_profile["experience"] = (merged_profile.get("experience", []) + arxiv.get("experience", []))[:10]
+            # Use max experience years
+            merged_profile["experience_years"] = max(
+                merged_profile.get("experience_years", 0),
+                arxiv.get("experience_years", 0)
+            )
+            # Use higher expertise level
+            level_order = {"Junior": 1, "Mid": 2, "Senior": 3, "Staff": 4}
+            merged_profile["expertise_level"] = max(
+                [merged_profile.get("expertise_level", "Mid"), arxiv.get("expertise_level", "Mid")],
+                key=lambda x: level_order.get(x, 2)
+            )
+            # Add arXiv-specific data
+            merged_profile["papers"] = arxiv.get("papers", [])
+            merged_profile["arxiv_ids"] = arxiv.get("arxiv_ids", [])
+            if not merged_profile.get("name"):
+                merged_profile["name"] = arxiv.get("name")
+        
+        # Ensure required fields
+        if not merged_profile.get("name"):
+            merged_profile["name"] = "Unknown Candidate"
+        if not merged_profile.get("skills"):
+            merged_profile["skills"] = []
+        if not merged_profile.get("domains"):
+            merged_profile["domains"] = []
+        
+        # Generate embedding
+        embedding = embedder.embed_candidate(merged_profile)
+        embedding_list = embedding.tolist()
+        
+        # Match to positions
+        postgres = get_postgres_client()
+        company_context = get_company_context()
+        company_id = company_context.get_company_id()
+        
+        # Get positions
+        if position_id:
+            position_query = "SELECT * FROM positions WHERE id = %s AND company_id = %s"
+            positions = postgres.execute_query(position_query, (position_id, company_id))
+        else:
+            position_query = "SELECT * FROM positions WHERE company_id = %s AND status = 'open'"
+            positions = postgres.execute_query(position_query, (company_id,))
+        
+        # Match against positions
+        position_matches = []
+        
+        for position in positions:
+            position_dict = dict(position)
+            # Get position embedding
+            position_embedding = embedder.embed_position(position_dict)
+            
+            # Calculate cosine similarity
+            similarity = float(np.dot(embedding, position_embedding) / (np.linalg.norm(embedding) * np.linalg.norm(position_embedding)))
+            
+            position_matches.append({
+                "position_id": position_dict["id"],
+                "title": position_dict["title"],
+                "team_id": position_dict.get("team_id"),
+                "similarity": similarity,
+                "match_percentage": round(similarity * 100, 2),
+                "must_haves": position_dict.get("must_haves", []),
+                "tech_stack": position_dict.get("tech_stack", []),
+                "domains": position_dict.get("domains", []),
+                "experience_level": position_dict.get("experience_level"),
+            })
+        
+        # Sort by similarity
+        position_matches.sort(key=lambda x: x["similarity"], reverse=True)
+        
+        # Prepare response
+        response = {
+            "candidate_profile": {
+                "name": merged_profile.get("name"),
+                "skills": merged_profile.get("skills", []),
+                "domains": merged_profile.get("domains", []),
+                "experience_years": merged_profile.get("experience_years", 0),
+                "expertise_level": merged_profile.get("expertise_level", "Mid"),
+                "experience": merged_profile.get("experience", [])[:5],
+                "github_handle": merged_profile.get("github_handle"),
+                "x_handle": merged_profile.get("x_handle"),
+                "arxiv_ids": merged_profile.get("arxiv_ids", []),
+                "github_stats": merged_profile.get("github_stats", {}),
+                "papers_count": len(merged_profile.get("papers", [])),
+                "repos_count": len(merged_profile.get("repos", [])),
+            },
+            "embedding": {
+                "dimensions": len(embedding_list),
+                "vector": embedding_list[:10],  # First 10 dims for preview
+                "full_vector": embedding_list  # Full vector
+            },
+            "position_matches": position_matches[:10],  # Top 10 matches
+            "sources": {
+                "github": "github" in gathered_data,
+                "arxiv": "arxiv" in gathered_data,
+                "x": "x" in gathered_data,
+            }
+        }
+        
+        await gatherer.close()
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error analyzing outbound signals: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Error analyzing outbound signals: {str(e)}")
 
 
 @router.get("/pipeline/stage/{stage}", response_model=List[Dict])

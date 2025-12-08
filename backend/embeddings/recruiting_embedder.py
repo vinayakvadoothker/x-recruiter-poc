@@ -319,6 +319,22 @@ class RecruitingKnowledgeGraphEmbedder:
         embedding = self.model.encode(text, normalize_embeddings=True)
         return embedding
     
+    def embed_text(self, text: str) -> np.ndarray:
+        """
+        Generate embedding for arbitrary text.
+        
+        Useful for query embeddings when searching the knowledge graph.
+        
+        Args:
+            text: Text string to embed
+        
+        Returns:
+            Embedding vector as numpy array (shape: (768,) for MPNet)
+            Normalized to unit length for cosine similarity
+        """
+        embedding = self.model.encode(text, normalize_embeddings=True)
+        return np.array(embedding)
+    
     def embed_position(self, position_data: Dict[str, Any]) -> np.ndarray:
         """
         Generate position-specific embedding.
@@ -439,12 +455,22 @@ class RecruitingKnowledgeGraphEmbedder:
         Returns:
             Formatted text string optimized for embedding
         """
-        requirements = ', '.join(data.get('requirements', []))
-        must_haves = ', '.join(data.get('must_haves', []))
-        nice_to_haves = ', '.join(data.get('nice_to_haves', []))
-        tech_stack = ', '.join(data.get('tech_stack', []))
-        domains = ', '.join(data.get('domains', []))
-        responsibilities = ', '.join(data.get('responsibilities', []))
+        # Helper to safely convert to list and join
+        def safe_join(value, default=''):
+            if not value:
+                return default
+            if isinstance(value, list):
+                return ', '.join(str(v) for v in value if v)
+            if isinstance(value, str):
+                return value
+            return str(value) if value else default
+        
+        requirements = safe_join(data.get('requirements'))
+        must_haves = safe_join(data.get('must_haves'))
+        nice_to_haves = safe_join(data.get('nice_to_haves'))
+        tech_stack = safe_join(data.get('tech_stack'))
+        domains = safe_join(data.get('domains'))
+        responsibilities = safe_join(data.get('responsibilities'))
         
         # Truncate description to first 200 chars for embedding
         description = data.get('description', '')

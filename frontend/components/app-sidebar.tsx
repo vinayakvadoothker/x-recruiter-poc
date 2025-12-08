@@ -11,6 +11,8 @@ import {
   TrendingUp,
   ChevronRight,
   Network,
+  MessageSquare,
+  Search,
 } from 'lucide-react';
 
 import {
@@ -159,6 +161,34 @@ export function AppSidebar() {
                   )}
                 </SidebarMenuItem>
               ))}
+
+              {/* Chat */}
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  asChild
+                  isActive={isActive('/chat')}
+                  tooltip="Chat"
+                >
+                  <Link href="/chat">
+                    <MessageSquare />
+                    <span>Chat</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
+
+              {/* Outbound Signals */}
+              <SidebarMenuItem>
+                <SidebarMenuButton
+                  asChild
+                  isActive={isActive('/outbound-signals')}
+                  tooltip="Outbound Signals"
+                >
+                  <Link href="/outbound-signals">
+                    <Search />
+                    <span>Outbound Signals</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
 
               {/* Graph - moved to bottom */}
               <SidebarMenuItem>

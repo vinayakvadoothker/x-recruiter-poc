@@ -282,7 +282,16 @@ CANDIDATE PROFILE - USE THIS FOR HYPER-PERSONALIZED QUESTIONS:
                 for i, paper in enumerate(recent_papers, 1):
                     title = paper.get('title', 'N/A')
                     abstract = paper.get('abstract', '')[:200]
-                    categories = [c.get('term', '') for c in paper.get('categories', [])]
+                    # Handle categories - can be list of dicts or list of strings
+                    categories_raw = paper.get('categories', [])
+                    categories = []
+                    for c in categories_raw:
+                        if isinstance(c, dict):
+                            categories.append(c.get('term', ''))
+                        elif isinstance(c, str):
+                            categories.append(c)
+                        else:
+                            categories.append(str(c))
                     prompt += f"  Paper {i}: {title}\n"
                     prompt += f"    Abstract: {abstract}...\n"
                     prompt += f"    Categories: {', '.join(categories)}\n"

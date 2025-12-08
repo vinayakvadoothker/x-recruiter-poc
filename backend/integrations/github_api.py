@@ -189,6 +189,7 @@ class GitHubAPIClient:
         Get README content for a repository.
         
         Tries multiple README filenames: README.md, README, README.txt, etc.
+        Does not retry on 404 errors (file doesn't exist) - just tries next filename.
         
         Args:
             owner: Repository owner username
@@ -202,10 +203,9 @@ class GitHubAPIClient:
         for readme_name in readme_names:
             try:
                 url = f"{self.base_url}/repos/{owner}/{repo}/contents/{readme_name}"
-                response = await retry_with_backoff(
-                    self._make_get_request,
-                    url=url
-                )
+                # Don't use retry_with_backoff for README fetching - 404s are permanent
+                # Just try the request once, if it fails, try next filename
+                response = await self._make_get_request(url=url)
                 
                 # GitHub returns base64 encoded content
                 if response.get("content"):
@@ -214,8 +214,18 @@ class GitHubAPIClient:
                     logger.info(f"Retrieved README for {owner}/{repo}")
                     return content
                     
+            except ValueError as e:
+                # Check if it's a 404 error - if so, just try next filename without logging
+                error_str = str(e)
+                if "404" in error_str or "Not Found" in error_str:
+                    # 404 is expected when README doesn't exist - silently try next
+                    continue
+                # For other errors, log and continue
+                logger.debug(f"Error fetching {readme_name} for {owner}/{repo}: {e}")
+                continue
             except Exception as e:
-                # Try next README name
+                # For any other exception, log and try next
+                logger.debug(f"Error fetching {readme_name} for {owner}/{repo}: {e}")
                 continue
         
         logger.debug(f"No README found for {owner}/{repo}")
